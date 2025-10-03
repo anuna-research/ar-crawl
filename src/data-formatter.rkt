@@ -14,26 +14,39 @@
          csv-writing
          racket/port)
 
-(require "scraper-interfaces.rkt")
+(require "scraper-interfaces.rkt"
+         "sqlite-formatter.rkt")
 
 (provide
  (contract-out
   ;; Format data based on format type
   [format-data
    (-> (listof hash?) 
-       (or/c 'json 'csv 'ndjson) 
+       (or/c 'json 'csv 'ndjson 'sqlite) 
        path-string?
+       boolean?)]
+  
+  ;; SQLite formatting with metadata
+  [format-data-with-metadata
+   (-> (listof hash?)
+       (or/c 'json 'csv 'ndjson 'sqlite)
+       path-string?
+       hash?
        boolean?)]
   
   ;; Stream formatter for large datasets
   [create-streaming-formatter
-   (-> (or/c 'json 'csv 'ndjson)
+   (-> (or/c 'json 'csv 'ndjson 'sqlite)
        path-string?
-       formatter?)]
+       (or/c formatter? sqlite-formatter?))]
   
   ;; Formatter operations
-  [write-item (-> formatter? hash? void?)]
-  [close-formatter (-> formatter? void?)]))
+  [write-item (-> (or/c formatter? sqlite-formatter?) hash? void?)]
+  [close-formatter (-> (or/c formatter? sqlite-formatter?) void?)]
+  
+  ;; SQLite-specific operations
+  [write-item-sqlite (-> sqlite-formatter? hash? void?)]
+  [close-sqlite-formatter (-> sqlite-formatter? void?)]))
 
 ;; @function{format-data}
 ;; @description{Format and save data to file in specified format}
@@ -58,9 +71,22 @@
       ['json (save-as-json data output-path)]
       ['csv (save-as-csv data output-path)]
       ['ndjson (save-as-ndjson data output-path)]
+      ['sqlite (format-data-sqlite data output-path (hash))]
       [else (error 'format-data "Unknown format: ~a" format)])
     
     #t))
+
+;; @function{format-data-with-metadata}
+;; @description{Format and save data with metadata (required for SQLite)}
+;; @param[data]{listof hash?} Data to format
+;; @param[format]{(or/c 'json 'csv 'ndjson 'sqlite)} Output format
+;; @param[output-path]{path-string?} Output file path
+;; @param[metadata]{hash?} Crawl metadata
+;; @returns{boolean?} Success status
+(define (format-data-with-metadata data format output-path metadata)
+  (match format
+    ['sqlite (format-data-sqlite data output-path metadata)]
+    [else (format-data data format output-path)]))
 
 ;; @function{save-as-json}
 ;; @description{Save data as JSON array}
@@ -153,6 +179,11 @@
       ['ndjson 
        (formatter 'ndjson out #t)]
       
+      ['sqlite
+       (begin
+         (close-output-port out)
+         (create-sqlite-formatter output-path (hash)))]
+      
       [else 
        (begin
          (close-output-port out)
@@ -161,14 +192,18 @@
 
 ;; @function{write-item}
 ;; @description{Write a single item to the formatter}
-;; @param[fmt]{formatter?} Formatter instance
+;; @param[fmt]{(or/c formatter? sqlite-formatter?)} Formatter instance
 ;; @param[item]{hash?} Item to write
 ;; @returns{void?}
 (define (write-item fmt item)
-  (match (formatter-type fmt)
-    ['json (write-json-item fmt item)]
-    ['csv (write-csv-item fmt item)]
-    ['ndjson (write-ndjson-item fmt item)]))
+  (cond
+    [(formatter? fmt)
+     (match (formatter-type fmt)
+       ['json (write-json-item fmt item)]
+       ['csv (write-csv-item fmt item)]
+       ['ndjson (write-ndjson-item fmt item)])]
+    [(sqlite-formatter? fmt)
+     (write-item-sqlite fmt item)]))
 
 ;; @function{write-json-item}
 ;; @description{Write item in JSON format}
@@ -213,18 +248,22 @@
 
 ;; @function{close-formatter}
 ;; @description{Close the formatter and finalize output}
-;; @param[fmt]{formatter?} Formatter to close
+;; @param[fmt]{(or/c formatter? sqlite-formatter?)} Formatter to close
 ;; @returns{void?}
 (define (close-formatter fmt)
-  (let ([out (formatter-output-port fmt)])
-    (match (formatter-type fmt)
-      ['json 
-       (begin
-         (write-string "]" out)
-         (newline out))]
-      [_ (void)])
-    
-    (close-output-port out)))
+  (cond
+    [(formatter? fmt)
+     (let ([out (formatter-output-port fmt)])
+       (match (formatter-type fmt)
+         ['json 
+          (begin
+            (write-string "]" out)
+            (newline out))]
+         [_ (void)])
+       
+       (close-output-port out))]
+    [(sqlite-formatter? fmt)
+     (close-sqlite-formatter fmt)]))
 
 ;; @function{display-table}
 ;; @description{Display data as CSV table}
