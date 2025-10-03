@@ -17,6 +17,7 @@
          "crawl-service-adaptor.rkt"
          "scraper-interfaces.rkt"
          "site-crawler.rkt"
+         "data-formatter.rkt"
          "utils.rkt")
 
 ;; Global state
@@ -153,18 +154,29 @@
 ;; @function{output-site-results}
 ;; @description{Output site crawl results to file}
 (define (output-site-results results output-file format verbose)
-  (define content 
-    (case format
-      [(json) (jsexpr->string results #:encode 'control)]
-      [(csv) (results->csv results)]
-      [(markdown) (results->markdown results)]
-      [else (jsexpr->string results #:encode 'control)]))
-  
   (ensure-directory (path-only output-file))
-  (call-with-output-file output-file
-    (lambda (port)
-      (display content port))
-    #:exists 'replace)
+  
+  (case format
+    [(sqlite)
+     ;; Use SQLite formatter for database output
+     (format-data-with-metadata 
+      (list results) ; Wrap single result in list
+      'sqlite 
+      output-file 
+      results)]
+    [else
+     ;; Handle other formats as before
+     (define content 
+       (case format
+         [(json) (jsexpr->string results #:encode 'control)]
+         [(csv) (results->csv results)]
+         [(markdown) (results->markdown results)]
+         [else (jsexpr->string results #:encode 'control)]))
+     
+     (call-with-output-file output-file
+       (lambda (port)
+         (display content port))
+       #:exists 'replace)])
   
   (when verbose
     (printf "Results saved to: ~a~n" output-file)))
@@ -368,20 +380,39 @@
 ;; @function{output-results}
 ;; @description{Output crawl results}
 (define (output-results results output-file format verbose)
-  (define content 
-    (case format
-      [(json) (jsexpr->string (job-results->hash results) #:indent 2)]
-      [(csv) (results->csv results)]
-      [(markdown md) (results->markdown results)]
-      [else (jsexpr->string (job-results->hash results))]))
-  
+
   (if output-file
       (begin
-        (call-with-output-file output-file
-          (lambda (port) (display content port))
-          #:exists 'replace)
+        (case format
+          [(sqlite)
+           ;; Use SQLite formatter for database output
+           (format-data-with-metadata 
+            (job-results-data results) ; Extract data list
+            'sqlite 
+            output-file 
+            (job-results->hash results))] ; Use full results as metadata
+          [else
+           ;; Handle other formats as before
+           (define content 
+             (case format
+               [(json) (jsexpr->string (job-results->hash results) #:indent 2)]
+               [(csv) (results->csv results)]
+               [(markdown md) (results->markdown results)]
+               [else (jsexpr->string (job-results->hash results))]))
+           
+           (call-with-output-file output-file
+             (lambda (port) (display content port))
+             #:exists 'replace)])
         (printf "Results saved to: ~a~n" output-file))
-      (display content))
+      ;; Console output (only for non-SQLite formats)
+      (when (not (eq? format 'sqlite))
+        (define content 
+          (case format
+            [(json) (jsexpr->string (job-results->hash results) #:indent 2)]
+            [(csv) (results->csv results)]
+            [(markdown md) (results->markdown results)]
+            [else (jsexpr->string (job-results->hash results))]))
+        (display content)))
   
   (when verbose
     (printf "~nResult statistics:~n")
@@ -443,8 +474,8 @@
     (crawl-delay-ms (string->number delay))]
    [("-o" "--output") file "Output file path"
     (output-file-param file)]
-   [("-f" "--format") fmt "Output format: json, csv, markdown (default: json)"
-    (output-format-param (string->symbol fmt))]
+   [("-f" "--format") fmt "Output format: json, csv, markdown, sqlite (default: json)"
+   (output-format-param (string->symbol fmt))]
    
    #:multi
    [("-s" "--service") service "Service to use (can be repeated)"
@@ -472,12 +503,14 @@
       
       (case command
         [(crawl)
-         (when (empty? command-args)
-           (error "URL required for crawl command"))
-         (cmd-crawl (car command-args)
-                   #:config (config-file-path)
-                   #:services (selected-services)
-                   #:verbose (verbose-mode))]
+        (when (empty? command-args)
+        (error "URL required for crawl command"))
+        (cmd-crawl (car command-args)
+        #:config (config-file-path)
+        #:services (selected-services)
+        #:verbose (verbose-mode)
+                    #:output (output-file-param)
+                    #:format (output-format-param))]
         
         [(crawl-site)
          (when (empty? command-args)
