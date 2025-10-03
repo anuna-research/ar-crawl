@@ -1,0 +1,47 @@
+{
+  "crawler": {
+    "enable_monitoring": true,
+    "fallback_enabled": true,
+    "log_level": "info",
+    "max_concurrent_jobs": 10,
+    "output_format": "json",
+    "rate_limit_ms": 1000,
+    "retry_attempts": 3,
+    "services": [
+      "direct"
+    ],
+    "timeout_ms": 30000
+  },
+  "monitoring": {
+    "health_check_interval": 300,
+    "metrics_enabled": true
+  },
+  "security": {
+    "max_redirects": 5,
+    "respect_robots_txt": true
+  },
+  "services": {
+    "direct": {
+      "follow_redirects": true,
+      "timeout": 30000,
+      "user-agent": "AR-Crawl/1.0"
+    },
+    "firecrawl": {
+      "api_key": "${FIRECRAWL_API_KEY}",
+      "formats": [
+        "markdown",
+        "html"
+      ],
+      "only_main_content": true
+    },
+    "scrapingbee": {
+      "api_key": "${SCRAPINGBEE_API_KEY}",
+      "premium_proxy": false,
+      "render_js": true
+    }
+  },
+  "storage": {
+    "output_directory": "./output",
+    "temp_directory": "./temp"
+  }
+}

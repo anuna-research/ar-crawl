@@ -1,0 +1,190 @@
+# AR-Crawl Makefile
+.PHONY: help install build test run clean docker-build docker-run setup
+
+# Default target
+help:
+	@echo "AR-Crawl Production Web Crawler"
+	@echo "================================"
+	@echo ""
+	@echo "Available targets:"
+	@echo "  install      Install Racket dependencies"
+	@echo "  build        Build the application"
+	@echo "  test         Run tests"
+	@echo "  run          Run the CLI tool"
+	@echo "  setup        Setup configuration files"
+	@echo "  docker-build Build Docker image"
+	@echo "  docker-run   Run with Docker Compose"
+	@echo "  clean        Clean up generated files"
+	@echo "  lint         Run code quality checks"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make setup"
+	@echo "  make run ARGS='crawl https://example.com'"
+	@echo "  make docker-run"
+
+# Variables
+RACKET_BIN := racket
+RACO_BIN := raco
+CLI_SCRIPT := src/cli.rkt
+CONFIG_DIR := config
+OUTPUT_DIR := output
+TEMP_DIR := temp
+LOGS_DIR := logs
+
+# Installation
+install:
+	@echo "Installing Racket dependencies..."
+	$(RACO_BIN) pkg install --auto --skip-installed \
+		html-parsing \
+		uuid \
+		gregor \
+		http123
+	@echo "Dependencies installed successfully"
+
+# Build
+build: install
+	@echo "Building AR-Crawl..."
+	$(RACKET_BIN) -c $(CLI_SCRIPT)
+	@echo "Build completed"
+
+# Testing
+test: build
+	@echo "Running tests..."
+	$(RACKET_BIN) -t src/crawl-service-adaptor.rkt
+	$(RACKET_BIN) -t src/config-manager.rkt
+	$(RACKET_BIN) -t src/production-crawler.rkt
+	$(RACKET_BIN) -t src/utils.rkt
+	@echo "All tests passed"
+
+# Setup
+setup:
+	@echo "Setting up AR-Crawl..."
+	@mkdir -p $(CONFIG_DIR) $(OUTPUT_DIR) $(TEMP_DIR) $(LOGS_DIR)
+	
+	@if [ ! -f $(CONFIG_DIR)/default.json ]; then \
+		echo "Creating default configuration..."; \
+		$(RACKET_BIN) $(CLI_SCRIPT) config init --file $(CONFIG_DIR)/default.json; \
+	fi
+	
+	@if [ ! -f .env ]; then \
+		echo "Creating .env file template..."; \
+		echo "# AR-Crawl Environment Variables" > .env; \
+		echo "FIRECRAWL_API_KEY=your_firecrawl_api_key_here" >> .env; \
+		echo "SCRAPINGBEE_API_KEY=your_scrapingbee_api_key_here" >> .env; \
+		echo "BROWSERLESS_API_KEY=your_browserless_api_key_here" >> .env; \
+		echo "SCRAPERAPI_API_KEY=your_scraperapi_api_key_here" >> .env; \
+		echo "LOG_LEVEL=info" >> .env; \
+		echo "MAX_CONCURRENT_JOBS=10" >> .env; \
+		echo "RATE_LIMIT_MS=1000" >> .env; \
+		echo ".env file created. Please edit it with your API keys."; \
+	fi
+	
+	@echo "Setup completed"
+
+# Run the CLI tool
+run: build
+	$(RACKET_BIN) $(CLI_SCRIPT) $(ARGS)
+
+# Docker targets
+docker-build:
+	@echo "Building Docker image..."
+	docker build -t ar-crawl:latest .
+	@echo "Docker image built successfully"
+
+docker-run: docker-build
+	@echo "Starting AR-Crawl with Docker Compose..."
+	docker-compose up -d
+	@echo "AR-Crawl is running. Use 'docker-compose logs -f' to view logs"
+
+docker-stop:
+	@echo "Stopping AR-Crawl containers..."
+	docker-compose down
+
+docker-logs:
+	docker-compose logs -f ar-crawl
+
+# Development targets
+dev-run:
+	$(RACKET_BIN) $(CLI_SCRIPT) monitor --config $(CONFIG_DIR)/default.json --verbose
+
+dev-test:
+	$(RACKET_BIN) $(CLI_SCRIPT) test --config $(CONFIG_DIR)/default.json --verbose
+
+# Production targets
+prod-setup:
+	@mkdir -p $(CONFIG_DIR) $(OUTPUT_DIR) $(TEMP_DIR) $(LOGS_DIR)
+	@if [ ! -f $(CONFIG_DIR)/production.json ]; then \
+		echo "Creating production configuration..."; \
+		$(RACKET_BIN) $(CLI_SCRIPT) config init --file $(CONFIG_DIR)/production.json --type production; \
+	fi
+
+prod-run:
+	$(RACKET_BIN) $(CLI_SCRIPT) $(ARGS) --config $(CONFIG_DIR)/production.json
+
+# Health checks
+health:
+	$(RACKET_BIN) $(CLI_SCRIPT) health --config $(CONFIG_DIR)/default.json
+
+services:
+	$(RACKET_BIN) $(CLI_SCRIPT) services --verbose
+
+# Maintenance
+clean:
+	@echo "Cleaning up..."
+	@rm -rf $(OUTPUT_DIR)/* $(TEMP_DIR)/* $(LOGS_DIR)/*
+	@find . -name "*.zo" -delete
+	@find . -name "compiled" -type d -exec rm -rf {} +
+	@echo "Cleanup completed"
+
+lint:
+	@echo "Running code quality checks..."
+	@# Add linting tools here if available for Racket
+	@echo "Lint checks completed"
+
+# Backup
+backup:
+	@echo "Creating backup..."
+	@tar -czf backup-$(shell date +%Y%m%d-%H%M%S).tar.gz \
+		$(CONFIG_DIR) \
+		$(OUTPUT_DIR) \
+		src/ \
+		--exclude='*.zo' \
+		--exclude='compiled'
+	@echo "Backup created"
+
+# Monitoring
+monitor:
+	$(RACKET_BIN) $(CLI_SCRIPT) monitor --config $(CONFIG_DIR)/default.json
+
+# Examples
+example-crawl:
+	$(RACKET_BIN) $(CLI_SCRIPT) crawl "https://httpbin.org/html" --verbose
+
+example-batch:
+	@echo "Running batch crawl example..."
+	@echo "https://httpbin.org/html" | while read url; do \
+		$(RACKET_BIN) $(CLI_SCRIPT) crawl "$$url" --output "$(OUTPUT_DIR)/$$url.json"; \
+	done
+
+# Help for specific commands
+help-config:
+	$(RACKET_BIN) $(CLI_SCRIPT) config --help
+
+help-crawl:
+	$(RACKET_BIN) $(CLI_SCRIPT) crawl --help
+
+# Version info
+version:
+	@echo "AR-Crawl v1.0.0"
+	@echo "Racket version:"
+	@$(RACKET_BIN) --version
+
+# Environment info
+env-info:
+	@echo "Environment Information:"
+	@echo "Racket: $(shell which $(RACKET_BIN))"
+	@echo "Raco: $(shell which $(RACO_BIN))"
+	@echo "Config dir: $(CONFIG_DIR)"
+	@echo "Output dir: $(OUTPUT_DIR)"
+	@echo "Docker: $(shell which docker)"
+	@echo "Docker Compose: $(shell which docker-compose)"
