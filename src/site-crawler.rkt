@@ -17,6 +17,7 @@
          "production-crawler.rkt"
          "crawl-service-adaptor.rkt"
          "scraper-interfaces.rkt"
+         "robots-txt.rkt"
          "utils.rkt")
 
 ;; Contracts and Types
@@ -50,7 +51,9 @@
    current-depth      ; Current crawl depth
    pages-crawled      ; Number of pages crawled
    start-time         ; Crawl start time
-   base-domain)       ; Base domain for same-domain filtering
+   base-domain        ; Base domain for same-domain filtering
+   robots-cache       ; Cache for robots.txt files
+   robots-txt)        ; Current robots.txt for base domain
   #:transparent)
 
 (struct site-crawl-result
@@ -169,6 +172,16 @@
     (define url (string->url url-str))
     (or (url-host url) "")))
 
+;; @function{get-url-path}
+;; @description{Extract path from URL for robots.txt checking}
+(define (get-url-path url-str)
+  (with-handlers ([exn? (lambda (e) "/")])
+    (define url (string->url url-str))
+    (define path (url-path url))
+    (if (empty? path)
+        "/"
+        (string-append "/" (string-join (map path/param-path path) "/")))))
+
 ;; @function{filter-urls}
 ;; @description{Filter URLs based on pattern and domain constraints}
 (define (filter-urls urls pattern base-url same-domain-only?)
@@ -197,6 +210,16 @@
   (define start-time (current-milliseconds))
   (define base-domain (get-domain seed-url))
   
+  ;; Initialize robots.txt cache and fetch robots.txt for base domain
+  (define robots-cache (create-robots-cache))
+  (define robots-txt-data 
+    (if (site-crawl-config-respect-robots config)
+        (fetch-robots-txt seed-url (site-crawl-config-user-agent config))
+        #f))
+  
+  (when (and robots-txt-data progress-callback)
+    (progress-callback "Loaded robots.txt" 0 1))
+  
   ;; Initialize crawl state
   (define initial-state
     (site-crawl-state (list seed-url)                    ; url-queue
@@ -205,7 +228,9 @@
                      0                                   ; current-depth
                      0                                   ; pages-crawled
                      start-time                          ; start-time
-                     base-domain))                       ; base-domain
+                     base-domain                         ; base-domain
+                     robots-cache                        ; robots-cache
+                     robots-txt-data))                   ; robots-txt
   
   (when progress-callback
     (progress-callback "Starting site crawl..." 0 1))
@@ -277,13 +302,43 @@
                                  [url-queue remaining-queue])
                     crawler config progress-callback)
          
-         ;; Crawl the URL
-         (let* ([_ (when progress-callback
-                     (progress-callback (format "Crawling: ~a" current-url) 
-                                      pages-count 
-                                      (site-crawl-config-max-pages config)))]
-                [_ (when (> (site-crawl-config-crawl-delay-ms config) 0)
-                     (sleep (/ (site-crawl-config-crawl-delay-ms config) 1000)))]
+         ;; Check robots.txt before crawling
+         (if (and (site-crawl-config-respect-robots config)
+                  (site-crawl-state-robots-txt state)
+                  (not (is-crawling-allowed? (site-crawl-state-robots-txt state)
+                                           (site-crawl-config-user-agent config)
+                                           (get-url-path current-url))))
+             ;; Skip URL due to robots.txt restrictions
+             (let* ([_ (when progress-callback
+                         (progress-callback (format "Skipping (robots.txt): ~a" current-url)
+                                          pages-count 
+                                          (site-crawl-config-max-pages config)))]
+                    [new-visited (set-add visited current-url)])
+               (crawl-loop (site-crawl-state remaining-queue
+                                            new-visited
+                                            crawled
+                                            (site-crawl-state-current-depth state)
+                                            pages-count
+                                            (site-crawl-state-start-time state)
+                                            (site-crawl-state-base-domain state)
+                                            (site-crawl-state-robots-cache state)
+                                            (site-crawl-state-robots-txt state))
+                          crawler config progress-callback))
+             
+             ;; Crawl the URL
+             (let* ([_ (when progress-callback
+                         (progress-callback (format "Crawling: ~a" current-url) 
+                                          pages-count 
+                                          (site-crawl-config-max-pages config)))]
+                    [robots-delay (if (and (site-crawl-config-respect-robots config)
+                                         (site-crawl-state-robots-txt state))
+                                    (get-crawl-delay (site-crawl-state-robots-txt state)
+                                                   (site-crawl-config-user-agent config))
+                                    #f)]
+                    [effective-delay (max (site-crawl-config-crawl-delay-ms config)
+                                        (if robots-delay (* robots-delay 1000) 0))]
+                    [_ (when (> effective-delay 0)
+                         (sleep (/ effective-delay 1000)))]
                 [job-id (start-crawling crawler current-url)]
                 [_ (let wait-loop ()
                      (define status (get-crawler-status crawler))
@@ -311,13 +366,15 @@
                       [new-crawled (hash-set crawled current-url page-data)])
                  
                  (crawl-loop (site-crawl-state new-queue
-                                              new-visited
-                                              new-crawled
-                                              (site-crawl-state-current-depth state)
-                                              (+ pages-count 1)
-                                              (site-crawl-state-start-time state)
-                                              (site-crawl-state-base-domain state))
-                            crawler config progress-callback))
+                 new-visited
+                 new-crawled
+                 (site-crawl-state-current-depth state)
+                 (+ pages-count 1)
+                 (site-crawl-state-start-time state)
+                 (site-crawl-state-base-domain state)
+                                   (site-crawl-state-robots-cache state)
+                                               (site-crawl-state-robots-txt state))
+                             crawler config progress-callback))
                
                ;; Failed - continue with next URL
                (crawl-loop (site-crawl-state remaining-queue
@@ -326,8 +383,10 @@
                                             (site-crawl-state-current-depth state)
                                             pages-count
                                             (site-crawl-state-start-time state)
-                                            (site-crawl-state-base-domain state))
-                          crawler config progress-callback))))]))
+                                            (site-crawl-state-base-domain state)
+                                             (site-crawl-state-robots-cache state)
+                                             (site-crawl-state-robots-txt state))
+                          crawler config progress-callback)))))]))
 
 ;; Utility Functions
 ;; -----------------
