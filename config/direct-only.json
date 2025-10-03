@@ -1,0 +1,32 @@
+{
+  "crawler": {
+    "services": ["direct"],
+    "fallback_enabled": true,
+    "max_concurrent_jobs": 10,
+    "rate_limit_ms": 1000,
+    "retry_attempts": 3,
+    "timeout_ms": 30000,
+    "enable_monitoring": true,
+    "log_level": "info",
+    "output_format": "json"
+  },
+  "services": {
+    "direct": {
+      "timeout": 30000,
+      "user_agent": "AR-Crawl/1.0",
+      "follow_redirects": true
+    }
+  },
+  "monitoring": {
+    "metrics_enabled": true,
+    "health_check_interval": 300
+  },
+  "storage": {
+    "output_directory": "./output",
+    "temp_directory": "./temp"
+  },
+  "security": {
+    "respect_robots_txt": true,
+    "max_redirects": 5
+  }
+}

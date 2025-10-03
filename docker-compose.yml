@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  ar-crawl:
+    build: .
+    container_name: ar-crawl
+    environment:
+      # Service API Keys (set these in .env file)
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY:-}
+      - BROWSERLESS_API_KEY=${BROWSERLESS_API_KEY:-}
+      - SCRAPERAPI_API_KEY=${SCRAPERAPI_API_KEY:-}
+      
+      # Configuration
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-10}
+      - RATE_LIMIT_MS=${RATE_LIMIT_MS:-1000}
+      
+    volumes:
+      # Mount configuration
+      - ./config:/app/config
+      
+      # Mount output directory
+      - ./output:/app/output
+      
+      # Mount logs
+      - ./logs:/app/logs
+      
+      # Optional: mount custom source for development
+      # - ./src:/app/src
+      
+    networks:
+      - ar-crawl-network
+    
+    restart: unless-stopped
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "racket", "src/cli.rkt", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Redis for caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: ar-crawl-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - ar-crawl-network
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  # Optional: PostgreSQL for storing crawl results
+  postgres:
+    image: postgres:15-alpine
+    container_name: ar-crawl-postgres
+    environment:
+      POSTGRES_DB: ar_crawl
+      POSTGRES_USER: ar_crawl
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ar_crawl_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - ar-crawl-network
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+
+  # Optional: Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ar-crawl-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - ar-crawl-network
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  # Optional: Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ar-crawl-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    networks:
+      - ar-crawl-network
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  ar-crawl-network:
+    driver: bridge

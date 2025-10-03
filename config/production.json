@@ -1,0 +1,83 @@
+{
+  "crawler": {
+    "services": ["firecrawl", "scrapingbee", "browserless", "scraperapi"],
+    "fallback_enabled": true,
+    "max_concurrent_jobs": 50,
+    "rate_limit_ms": 1000,
+    "retry_attempts": 3,
+    "timeout_ms": 30000,
+    "enable_monitoring": true,
+    "log_level": "info",
+    "output_format": "json"
+  },
+  "services": {
+    "firecrawl": {
+      "api_key": "${FIRECRAWL_API_KEY}",
+      "formats": ["markdown", "html"],
+      "include_tags": [],
+      "exclude_tags": ["nav", "footer", "header", "script", "style"],
+      "only_main_content": true,
+      "wait_for": "",
+      "timeout": 30000
+    },
+    "scrapingbee": {
+      "api_key": "${SCRAPINGBEE_API_KEY}",
+      "render_js": true,
+      "premium_proxy": false,
+      "country_code": "us",
+      "device": "desktop",
+      "wait": 0,
+      "wait_for": "",
+      "block_ads": true,
+      "block_resources": false,
+      "screenshot": false
+    },
+    "browserless": {
+      "api_key": "${BROWSERLESS_API_KEY}",
+      "block_ads": true,
+      "wait_for": "networkidle0",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "stealth": true
+    },
+    "scraperapi": {
+      "api_key": "${SCRAPERAPI_API_KEY}",
+      "render": true,
+      "country_code": "us",
+      "device_type": "desktop",
+      "premium": false
+    }
+  },
+  "monitoring": {
+    "metrics_enabled": true,
+    "health_check_interval": 300,
+    "alert_thresholds": {
+      "error_rate": 0.1,
+      "response_time": 10000,
+      "queue_size": 1000
+    }
+  },
+  "storage": {
+    "output_directory": "./output",
+    "temp_directory": "./temp",
+    "max_file_size": 104857600,
+    "compression_enabled": true
+  },
+  "rate_limiting": {
+    "requests_per_minute": 60,
+    "burst_limit": 10,
+    "backoff_strategy": "exponential"
+  },
+  "security": {
+    "user_agents": [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    ],
+    "respect_robots_txt": true,
+    "max_redirects": 5,
+    "ssl_verify": true
+  }
+}

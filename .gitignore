@@ -1,0 +1,41 @@
+# Output files
+output/
+output/*.json
+output/*.csv
+output/*.md
+
+# Config files with secrets (keep templates)
+config/*.local.json
+
+# Temporary files
+temp/
+*.tmp
+*.log
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Racket compiled files
+compiled/
+*.zo
+*.dep
+
+# Backup files
+*.bak
+*.orig
+
+# Test artifacts
+test-output/
