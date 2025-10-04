@@ -1,0 +1,228 @@
+when:
+  - event: tag
+    branch: main
+
+steps:
+  - name: build-executables
+    image: docker.io/anunaresearch/ar-crawl:latest
+    commands:
+      # Install dependencies
+      - apt-get update --allow-releaseinfo-change && apt-get install -y zip build-essential libffi-dev curl gcc g++ make autoconf libtool
+      
+      # Create directories
+      - mkdir -p dist
+      
+      # Store original directory
+      - ORIGINAL_DIR=$(pwd)
+      
+      # Build for Linux (native platform) - highest priority
+      - echo "Building for Linux ($(uname -m))..."
+      - find . -type d -name compiled | xargs rm -rf  # Clean compiled files
+      - raco make src/cli.rkt  # Compile to bytecode first
+      - raco exe -o dist/ar-crawl src/cli.rkt
+      - raco distribute dist/ar-crawl-dist dist/ar-crawl
+      - cd dist && tar -czvf ar-crawl-linux-$(uname -m).tar.gz ar-crawl-dist && cd ..
+      
+      # Install raco-cross
+      - echo "Preparing for macOS builds..."
+      - raco pkg install --auto raco-cross
+      
+      # Attempt macOS x86_64 (Intel) build - second priority
+      - echo "Setting up macOS x86_64 (Intel) build environment..."
+      - |
+        set +e  # Don't exit on error
+        
+        # Clean workspace and compiled files
+        rm -rf /tmp/macos-x86_64
+        mkdir -p /tmp/macos-x86_64
+        find . -type d -name compiled | xargs rm -rf
+        
+        # First set up the cross-compiler environment
+        echo "Setting up x86_64 macOS build environment..."
+        if timeout 10m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc; then
+          echo "Successfully set up cross-compiler environment for macOS x86_64"
+          
+          # Install project dependencies
+          echo "Installing project dependencies..."
+          if timeout 8m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc pkg install --auto html-parsing uuid gregor http123; then
+            echo "Successfully installed dependencies for macOS x86_64"
+            
+            # Clean compiled files again
+            find . -type d -name compiled | xargs rm -rf
+            
+            # Compile to bytecode first
+            echo "Compiling to bytecode for macOS x86_64..."
+            if timeout 5m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc make src/cli.rkt; then
+              echo "Successfully compiled bytecode for macOS x86_64"
+              
+              # Build executable with timeout
+              echo "Building executable for macOS x86_64..."
+              if timeout 5m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc exe --orig-exe -o dist/ar-crawl-intel src/cli.rkt; then
+                echo "Successfully built executable for macOS x86_64"
+                
+                # Create distribution
+                if timeout 5m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc dist dist/ar-crawl-intel-dist dist/ar-crawl-intel; then
+                  # Create archive
+                  cd dist && tar -czvf ar-crawl-macos-x86_64.tar.gz ar-crawl-intel-dist && cd $ORIGINAL_DIR
+                  echo "macOS x86_64 build completed successfully"
+                fi
+              fi
+            fi
+          fi
+        fi
+        set -e  # Restore error checking
+      
+      # Attempt macOS ARM64 build only if there's time left (lowest priority)
+      - echo "Setting up macOS ARM64 (Apple Silicon) build environment..."
+      - |
+        set +e  # Don't exit on error
+        
+        # Check if we already have enough time spent on x86_64
+        if [ -f "dist/ar-crawl-macos-x86_64.tar.gz" ]; then
+          # Clean workspace and compiled files
+          rm -rf /tmp/macos-arm64-cs
+          mkdir -p /tmp/macos-arm64-cs
+          
+          # Create a clean copy for ARM64 build
+          mkdir -p /tmp/clean-arm64-build
+          cp -r . /tmp/clean-arm64-build/
+          
+          # Remove all compiled files in the clean directory
+          find /tmp/clean-arm64-build -type d -name compiled | xargs rm -rf
+          
+          # First try without --use-source to save time
+          echo "Setting up ARM64 macOS build environment..."
+          if timeout 15m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs; then
+            echo "Successfully set up cross-compiler environment for macOS ARM64"
+            
+            # Install project dependencies
+            echo "Installing project dependencies..."
+            if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs pkg install --auto html-parsing uuid gregor http123; then
+              echo "Successfully installed dependencies for macOS ARM64"
+              
+              # Work in the clean directory
+              cd /tmp/clean-arm64-build
+              
+              # Compile to bytecode first
+              echo "Compiling to bytecode for macOS ARM64..."
+              if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs make src/cli.rkt; then
+                echo "Successfully compiled bytecode for macOS ARM64"
+                
+                # Build executable - giving it more time
+                echo "Building executable for macOS ARM64..."
+                if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs exe --orig-exe -o ar-crawl-arm src/cli.rkt; then
+                  echo "Successfully built executable for macOS ARM64"
+                  
+                  # Create distribution
+                  mkdir -p dist
+                  if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs dist dist/ar-crawl-arm-dist ar-crawl-arm; then
+                    # IMPORTANT: Directly create tar in the original directory
+                    cd dist
+                    tar -czvf $ORIGINAL_DIR/dist/ar-crawl-macos-arm64.tar.gz ar-crawl-arm-dist
+                    cd $ORIGINAL_DIR
+                    
+                    echo "macOS ARM64 build completed successfully"
+                    # Verify the file exists
+                    ls -la dist/ar-crawl-macos-arm64.tar.gz
+                  fi
+                fi
+              fi
+              
+              # Return to original directory 
+              cd $ORIGINAL_DIR
+            else
+              cd $ORIGINAL_DIR
+              echo "Failed to install dependencies for macOS ARM64"
+            fi
+          fi
+        else
+          echo "Skipping ARM64 macOS build to save time - prioritizing x86_64 build"
+        fi
+        set -e  # Restore error checking
+      
+      # Create version.json
+      - |
+        cat > dist/version.json << EOF
+        {
+          "version": "${CI_COMMIT_TAG#v}",
+          "download_url": "https://codeberg.org/anuna/ar-crawl/releases/download/${CI_COMMIT_TAG}"
+        }
+        EOF
+      
+      # Create release notes
+      - |
+        HAS_X86_64_MAC=false
+        HAS_ARM64_MAC=false
+        
+        if [ -f "dist/ar-crawl-macos-x86_64.tar.gz" ]; then
+          HAS_X86_64_MAC=true
+        fi
+        
+        if [ -f "dist/ar-crawl-macos-arm64.tar.gz" ]; then
+          HAS_ARM64_MAC=true
+        fi
+        
+        cat > release-notes.md << EOF
+        ## Release ${CI_COMMIT_TAG}
+        
+        AR-Crawl production web crawler with service fallbacks.
+        
+        ### Installation
+        
+        #### Linux
+        
+        1. Download the Linux archive
+        2. Extract: \`tar -xzf ar-crawl-linux-$(uname -m).tar.gz\`
+        3. Install: \`sudo cp ar-crawl-dist/bin/ar-crawl /usr/local/bin/\`
+        
+        EOF
+        
+        if $HAS_X86_64_MAC; then
+          cat >> release-notes.md << EOF
+        #### macOS (Intel)
+        
+        1. Download the macOS Intel archive
+        2. Extract: \`tar -xzf ar-crawl-macos-x86_64.tar.gz\`
+        3. Install: \`sudo cp ar-crawl-intel-dist/bin/ar-crawl /usr/local/bin/\`
+        
+        EOF
+        fi
+        
+        if $HAS_ARM64_MAC; then
+          cat >> release-notes.md << EOF
+        #### macOS (Apple Silicon)
+        
+        1. Download the macOS ARM archive
+        2. Extract: \`tar -xzf ar-crawl-macos-arm64.tar.gz\`
+        3. Install: \`sudo cp ar-crawl-arm-dist/bin/ar-crawl /usr/local/bin/\`
+        
+        EOF
+        fi
+        
+        cat >> release-notes.md << EOF
+        ### Usage
+        
+        \`\`\`bash
+        # Crawl a single URL
+        ar-crawl crawl https://example.com
+        
+        # Show help
+        ar-crawl --help
+        \`\`\`
+        EOF
+      
+      # List files that will be included in the release
+      - ls -la dist/
+
+  - name: publish-release
+    image: plugins/gitea-release
+    settings:
+      api_key:
+        from_secret: codeberg_token
+      base_url: https://codeberg.org
+      files:
+        - dist/ar-crawl-linux-*.tar.gz
+        - dist/ar-crawl-macos-*.tar.gz
+        - dist/version.json
+      title: ${CI_COMMIT_TAG}
+      note: release-notes.md

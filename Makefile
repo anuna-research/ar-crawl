@@ -1,5 +1,5 @@
 # AR-Crawl Makefile
-.PHONY: help install build test run clean docker-build docker-run setup
+.PHONY: help install build test run clean docker-build docker-run setup binary dist
 
 # Default target
 help:
@@ -9,6 +9,8 @@ help:
 	@echo "Available targets:"
 	@echo "  install      Install Racket dependencies"
 	@echo "  build        Build the application"
+	@echo "  binary       Build standalone binary executable"
+	@echo "  dist         Build distribution archive"
 	@echo "  test         Run tests"
 	@echo "  run          Run the CLI tool"
 	@echo "  setup        Setup configuration files"
@@ -30,6 +32,8 @@ CONFIG_DIR := config
 OUTPUT_DIR := output
 TEMP_DIR := temp
 LOGS_DIR := logs
+DIST_DIR := dist
+BINARY_NAME := ar-crawl
 
 # Installation
 install:
@@ -46,6 +50,22 @@ build: install
 	@echo "Building AR-Crawl..."
 	$(RACKET_BIN) -c $(CLI_SCRIPT)
 	@echo "Build completed"
+
+# Binary build
+binary: install
+	@echo "Building standalone binary..."
+	@mkdir -p $(DIST_DIR)
+	@find . -type d -name compiled | xargs rm -rf  # Clean compiled files
+	$(RACO_BIN) make $(CLI_SCRIPT)  # Compile to bytecode first
+	$(RACO_BIN) exe -o $(DIST_DIR)/$(BINARY_NAME) $(CLI_SCRIPT)
+	@echo "Binary created at $(DIST_DIR)/$(BINARY_NAME)"
+
+# Distribution build
+dist: binary
+	@echo "Creating distribution..."
+	$(RACO_BIN) distribute $(DIST_DIR)/$(BINARY_NAME)-dist $(DIST_DIR)/$(BINARY_NAME)
+	@cd $(DIST_DIR) && tar -czvf $(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz $(BINARY_NAME)-dist
+	@echo "Distribution created at $(DIST_DIR)/$(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz"
 
 # Testing
 test: build
@@ -131,7 +151,7 @@ services:
 # Maintenance
 clean:
 	@echo "Cleaning up..."
-	@rm -rf $(OUTPUT_DIR)/* $(TEMP_DIR)/* $(LOGS_DIR)/*
+	@rm -rf $(OUTPUT_DIR)/* $(TEMP_DIR)/* $(LOGS_DIR)/* $(DIST_DIR)/*
 	@find . -name "*.zo" -delete
 	@find . -name "compiled" -type d -exec rm -rf {} +
 	@echo "Cleanup completed"
