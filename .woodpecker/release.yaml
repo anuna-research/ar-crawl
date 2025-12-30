@@ -8,60 +8,73 @@ steps:
     commands:
       # Install dependencies
       - apt-get update --allow-releaseinfo-change && apt-get install -y zip build-essential libffi-dev curl gcc g++ make autoconf libtool
-      
+
       # Create directories
       - mkdir -p dist
-      
+
       # Store original directory
       - ORIGINAL_DIR=$(pwd)
-      
+
       # Build for Linux (native platform) - highest priority
       - echo "Building for Linux ($(uname -m))..."
       - find . -type d -name compiled | xargs rm -rf  # Clean compiled files
       - raco make src/cli.rkt  # Compile to bytecode first
       - raco exe -o dist/ar-crawl src/cli.rkt
       - raco distribute dist/ar-crawl-dist dist/ar-crawl
+
+      # Bundle playwright-service with the distribution
+      - echo "Bundling playwright-service..."
+      - mkdir -p dist/ar-crawl-dist/lib/playwright-service
+      - cp playwright-service/package.json dist/ar-crawl-dist/lib/playwright-service/
+      - cp playwright-service/server.js dist/ar-crawl-dist/lib/playwright-service/
+
+      # Create the archive
       - cd dist && tar -czvf ar-crawl-linux-$(uname -m).tar.gz ar-crawl-dist && cd ..
-      
+
       # Install raco-cross
       - echo "Preparing for macOS builds..."
       - raco pkg install --auto raco-cross
-      
+
       # Attempt macOS x86_64 (Intel) build - second priority
       - echo "Setting up macOS x86_64 (Intel) build environment..."
       - |
         set +e  # Don't exit on error
-        
+
         # Clean workspace and compiled files
         rm -rf /tmp/macos-x86_64
         mkdir -p /tmp/macos-x86_64
         find . -type d -name compiled | xargs rm -rf
-        
+
         # First set up the cross-compiler environment
         echo "Setting up x86_64 macOS build environment..."
         if timeout 10m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc; then
           echo "Successfully set up cross-compiler environment for macOS x86_64"
-          
+
           # Install project dependencies
           echo "Installing project dependencies..."
           if timeout 8m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc pkg install --auto html-parsing uuid gregor http123; then
             echo "Successfully installed dependencies for macOS x86_64"
-            
+
             # Clean compiled files again
             find . -type d -name compiled | xargs rm -rf
-            
+
             # Compile to bytecode first
             echo "Compiling to bytecode for macOS x86_64..."
             if timeout 5m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc make src/cli.rkt; then
               echo "Successfully compiled bytecode for macOS x86_64"
-              
+
               # Build executable with timeout
               echo "Building executable for macOS x86_64..."
               if timeout 5m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc exe --orig-exe -o dist/ar-crawl-intel src/cli.rkt; then
                 echo "Successfully built executable for macOS x86_64"
-                
+
                 # Create distribution
                 if timeout 5m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc dist dist/ar-crawl-intel-dist dist/ar-crawl-intel; then
+                  # Bundle playwright-service
+                  mkdir -p dist/ar-crawl-intel-dist/lib/playwright-service
+                  cp playwright-service/package.json dist/ar-crawl-intel-dist/lib/playwright-service/
+                  cp playwright-service/server.js dist/ar-crawl-intel-dist/lib/playwright-service/
+
                   # Create archive
                   cd dist && tar -czvf ar-crawl-macos-x86_64.tar.gz ar-crawl-intel-dist && cd $ORIGINAL_DIR
                   echo "macOS x86_64 build completed successfully"
@@ -71,64 +84,69 @@ steps:
           fi
         fi
         set -e  # Restore error checking
-      
+
       # Attempt macOS ARM64 build only if there's time left (lowest priority)
       - echo "Setting up macOS ARM64 (Apple Silicon) build environment..."
       - |
         set +e  # Don't exit on error
-        
+
         # Check if we already have enough time spent on x86_64
         if [ -f "dist/ar-crawl-macos-x86_64.tar.gz" ]; then
           # Clean workspace and compiled files
           rm -rf /tmp/macos-arm64-cs
           mkdir -p /tmp/macos-arm64-cs
-          
+
           # Create a clean copy for ARM64 build
           mkdir -p /tmp/clean-arm64-build
           cp -r . /tmp/clean-arm64-build/
-          
+
           # Remove all compiled files in the clean directory
           find /tmp/clean-arm64-build -type d -name compiled | xargs rm -rf
-          
+
           # First try without --use-source to save time
           echo "Setting up ARM64 macOS build environment..."
           if timeout 15m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs; then
             echo "Successfully set up cross-compiler environment for macOS ARM64"
-            
+
             # Install project dependencies
             echo "Installing project dependencies..."
             if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs pkg install --auto html-parsing uuid gregor http123; then
               echo "Successfully installed dependencies for macOS ARM64"
-              
+
               # Work in the clean directory
               cd /tmp/clean-arm64-build
-              
+
               # Compile to bytecode first
               echo "Compiling to bytecode for macOS ARM64..."
               if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs make src/cli.rkt; then
                 echo "Successfully compiled bytecode for macOS ARM64"
-                
+
                 # Build executable - giving it more time
                 echo "Building executable for macOS ARM64..."
                 if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs exe --orig-exe -o ar-crawl-arm src/cli.rkt; then
                   echo "Successfully built executable for macOS ARM64"
-                  
+
                   # Create distribution
                   mkdir -p dist
                   if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs dist dist/ar-crawl-arm-dist ar-crawl-arm; then
+                    # Bundle playwright-service
+                    mkdir -p dist/ar-crawl-arm-dist/lib/playwright-service
+                    cp $ORIGINAL_DIR/playwright-service/package.json dist/ar-crawl-arm-dist/lib/playwright-service/
+                    cp $ORIGINAL_DIR/playwright-service/server.js dist/ar-crawl-arm-dist/lib/playwright-service/
+
                     # IMPORTANT: Directly create tar in the original directory
                     cd dist
                     tar -czvf $ORIGINAL_DIR/dist/ar-crawl-macos-arm64.tar.gz ar-crawl-arm-dist
                     cd $ORIGINAL_DIR
-                    
+
                     echo "macOS ARM64 build completed successfully"
                     # Verify the file exists
                     ls -la dist/ar-crawl-macos-arm64.tar.gz
                   fi
                 fi
               fi
-              
-              # Return to original directory 
+
+              # Return to original directory
               cd $ORIGINAL_DIR
             else
               cd $ORIGINAL_DIR
@@ -139,7 +157,7 @@ steps:
           echo "Skipping ARM64 macOS build to save time - prioritizing x86_64 build"
         fi
         set -e  # Restore error checking
-      
+
       # Create version.json
       - |
         cat > dist/version.json << EOF
@@ -148,69 +166,317 @@ steps:
           "download_url": "https://codeberg.org/anuna/ar-crawl/releases/download/${CI_COMMIT_TAG}"
         }
         EOF
-      
+
+      # Create install script
+      - |
+        cat > dist/install.sh << 'INSTALL_EOF'
+        #!/bin/bash
+        set -e
+
+        # AR-Crawl Installer
+        # Installs ar-crawl binary and optionally sets up playwright-service
+
+        TOOL_NAME="ar-crawl"
+        VERSION="${VERSION:-latest}"
+        BASE_URL="https://codeberg.org/anuna/ar-crawl/releases"
+        INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+        LIB_DIR="${LIB_DIR:-$HOME/.local/lib/ar-crawl}"
+
+        # Colors for output
+        RED='\033[0;31m'
+        GREEN='\033[0;32m'
+        YELLOW='\033[1;33m'
+        NC='\033[0m' # No Color
+
+        info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+        warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+        error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+        # Detect OS and architecture
+        detect_platform() {
+          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          ARCH="$(uname -m)"
+
+          case "$OS" in
+            linux*)  OS="linux" ;;
+            darwin*) OS="macos" ;;
+            *)       error "Unsupported OS: $OS" ;;
+          esac
+
+          case "$ARCH" in
+            x86_64|amd64)  ARCH="x86_64" ;;
+            arm64|aarch64)
+              if [[ "$OS" == "macos" ]]; then
+                ARCH="arm64"
+              else
+                error "ARM64 Linux is not currently supported"
+              fi
+              ;;
+            *)       error "Unsupported architecture: $ARCH" ;;
+          esac
+
+          PLATFORM="${OS}-${ARCH}"
+          info "Detected platform: $PLATFORM"
+        }
+
+        # Get the latest version if not specified
+        get_version() {
+          if [[ "$VERSION" == "latest" ]]; then
+            info "Fetching latest version..."
+            VERSION=$(curl -fsSL "$BASE_URL/latest/download/version.json" 2>/dev/null | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
+            if [[ -z "$VERSION" ]]; then
+              # Fallback: get from redirect
+              VERSION=$(curl -fsSI "$BASE_URL/latest" 2>/dev/null | grep -i "location:" | sed 's/.*\/v\([^/]*\).*/\1/' | tr -d '\r\n')
+            fi
+            if [[ -z "$VERSION" ]]; then
+              error "Could not determine latest version"
+            fi
+            info "Latest version: $VERSION"
+          fi
+        }
+
+        # Download and install
+        install_binary() {
+          info "Installing $TOOL_NAME v$VERSION for $PLATFORM..."
+
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+
+          # Construct download URL
+          if [[ "$OS" == "macos" && "$ARCH" == "arm64" ]]; then
+            ARCHIVE_NAME="ar-crawl-macos-arm64.tar.gz"
+            DIST_DIR="ar-crawl-arm-dist"
+          elif [[ "$OS" == "macos" && "$ARCH" == "x86_64" ]]; then
+            ARCHIVE_NAME="ar-crawl-macos-x86_64.tar.gz"
+            DIST_DIR="ar-crawl-intel-dist"
+          else
+            ARCHIVE_NAME="ar-crawl-linux-${ARCH}.tar.gz"
+            DIST_DIR="ar-crawl-dist"
+          fi
+
+          DOWNLOAD_URL="$BASE_URL/download/v$VERSION/$ARCHIVE_NAME"
+          ARCHIVE_FILE="$TMP_DIR/$ARCHIVE_NAME"
+
+          info "Downloading from $DOWNLOAD_URL..."
+          if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$DOWNLOAD_URL" -o "$ARCHIVE_FILE" || error "Download failed"
+          elif command -v wget >/dev/null 2>&1; then
+            wget -q "$DOWNLOAD_URL" -O "$ARCHIVE_FILE" || error "Download failed"
+          else
+            error "curl or wget is required"
+          fi
+
+          # Extract
+          info "Extracting archive..."
+          tar -xzf "$ARCHIVE_FILE" -C "$TMP_DIR"
+
+          # Install binary
+          mkdir -p "$INSTALL_DIR"
+          cp "$TMP_DIR/$DIST_DIR/bin/ar-crawl"* "$INSTALL_DIR/$TOOL_NAME"
+          chmod +x "$INSTALL_DIR/$TOOL_NAME"
+          info "Binary installed to $INSTALL_DIR/$TOOL_NAME"
+
+          # Install playwright-service if present
+          if [[ -d "$TMP_DIR/$DIST_DIR/lib/playwright-service" ]]; then
+            mkdir -p "$LIB_DIR/playwright-service"
+            cp -r "$TMP_DIR/$DIST_DIR/lib/playwright-service/"* "$LIB_DIR/playwright-service/"
+            info "Playwright service files installed to $LIB_DIR/playwright-service"
+          fi
+
+          # Check if directory is in PATH
+          if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+            warn "$INSTALL_DIR is not in your PATH"
+            echo ""
+            echo "Add it to your shell profile:"
+            echo "  echo 'export PATH=\"\$PATH:$INSTALL_DIR\"' >> ~/.bashrc"
+            echo "  # or for zsh:"
+            echo "  echo 'export PATH=\"\$PATH:$INSTALL_DIR\"' >> ~/.zshrc"
+          fi
+        }
+
+        # Setup playwright-service
+        setup_playwright() {
+          if ! command -v node >/dev/null 2>&1; then
+            warn "Node.js not found. Playwright service requires Node.js 18+."
+            warn "Install Node.js and run: cd $LIB_DIR/playwright-service && npm install"
+            return
+          fi
+
+          NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
+          if [[ "$NODE_VERSION" -lt 18 ]]; then
+            warn "Node.js version $NODE_VERSION found, but 18+ is required for Playwright."
+            return
+          fi
+
+          if [[ -d "$LIB_DIR/playwright-service" ]]; then
+            info "Setting up Playwright service..."
+            cd "$LIB_DIR/playwright-service"
+
+            # Install npm dependencies
+            info "Installing npm dependencies..."
+            npm install --silent
+
+            # Install Chromium browser
+            info "Installing Chromium browser for Playwright..."
+            npx playwright install chromium
+
+            info "Playwright service setup complete!"
+            echo ""
+            echo "To start the Playwright service:"
+            echo "  cd $LIB_DIR/playwright-service && npm start"
+            echo ""
+            echo "Or use the Docker setup for production."
+          fi
+        }
+
+        # Print usage help
+        print_usage() {
+          echo ""
+          echo "Usage:"
+          echo "  curl -fsSL https://codeberg.org/anuna/ar-crawl/raw/branch/main/install.sh | bash"
+          echo ""
+          echo "Environment variables:"
+          echo "  VERSION      - Version to install (default: latest)"
+          echo "  INSTALL_DIR  - Binary install directory (default: ~/.local/bin)"
+          echo "  LIB_DIR      - Library install directory (default: ~/.local/lib/ar-crawl)"
+          echo "  SKIP_PLAYWRIGHT - Set to 1 to skip Playwright setup"
+          echo ""
+          echo "Examples:"
+          echo "  # Install latest version"
+          echo "  curl -fsSL https://codeberg.org/anuna/ar-crawl/raw/branch/main/install.sh | bash"
+          echo ""
+          echo "  # Install specific version"
+          echo "  VERSION=1.0.0 curl -fsSL ... | bash"
+          echo ""
+          echo "  # Install without Playwright"
+          echo "  SKIP_PLAYWRIGHT=1 curl -fsSL ... | bash"
+        }
+
+        # Main
+        main() {
+          echo "================================================"
+          echo "  AR-Crawl Installer"
+          echo "================================================"
+          echo ""
+
+          detect_platform
+          get_version
+          install_binary
+
+          if [[ "${SKIP_PLAYWRIGHT:-0}" != "1" ]]; then
+            setup_playwright
+          fi
+
+          echo ""
+          info "Installation complete!"
+          echo ""
+          echo "Quick start:"
+          echo "  ar-crawl --help"
+          echo "  ar-crawl crawl https://example.com"
+          echo ""
+          echo "For full documentation: https://codeberg.org/anuna/ar-crawl"
+        }
+
+        main "$@"
+        INSTALL_EOF
+        chmod +x dist/install.sh
+
       # Create release notes
       - |
         HAS_X86_64_MAC=false
         HAS_ARM64_MAC=false
-        
+
         if [ -f "dist/ar-crawl-macos-x86_64.tar.gz" ]; then
           HAS_X86_64_MAC=true
         fi
-        
+
         if [ -f "dist/ar-crawl-macos-arm64.tar.gz" ]; then
           HAS_ARM64_MAC=true
         fi
-        
+
         cat > release-notes.md << EOF
         ## Release ${CI_COMMIT_TAG}
-        
+
         AR-Crawl production web crawler with service fallbacks.
-        
-        ### Installation
-        
+
+        ### Quick Install
+
+        \`\`\`bash
+        curl -fsSL https://codeberg.org/anuna/ar-crawl/releases/download/${CI_COMMIT_TAG}/install.sh | bash
+        \`\`\`
+
+        ### Manual Installation
+
         #### Linux
-        
+
         1. Download the Linux archive
         2. Extract: \`tar -xzf ar-crawl-linux-$(uname -m).tar.gz\`
-        3. Install: \`sudo cp ar-crawl-dist/bin/ar-crawl /usr/local/bin/\`
-        
+        3. Install binary: \`sudo cp ar-crawl-dist/bin/ar-crawl /usr/local/bin/\`
+        4. (Optional) Install playwright-service:
+           \`\`\`bash
+           sudo mkdir -p /usr/local/lib/ar-crawl
+           sudo cp -r ar-crawl-dist/lib/playwright-service /usr/local/lib/ar-crawl/
+           cd /usr/local/lib/ar-crawl/playwright-service
+           sudo npm install
+           npx playwright install chromium
+           \`\`\`
+
         EOF
-        
+
         if $HAS_X86_64_MAC; then
           cat >> release-notes.md << EOF
         #### macOS (Intel)
-        
+
         1. Download the macOS Intel archive
         2. Extract: \`tar -xzf ar-crawl-macos-x86_64.tar.gz\`
         3. Install: \`sudo cp ar-crawl-intel-dist/bin/ar-crawl /usr/local/bin/\`
-        
+        4. (Optional) Setup playwright-service as above
+
         EOF
         fi
-        
+
         if $HAS_ARM64_MAC; then
           cat >> release-notes.md << EOF
         #### macOS (Apple Silicon)
-        
+
         1. Download the macOS ARM archive
         2. Extract: \`tar -xzf ar-crawl-macos-arm64.tar.gz\`
         3. Install: \`sudo cp ar-crawl-arm-dist/bin/ar-crawl /usr/local/bin/\`
-        
+        4. (Optional) Setup playwright-service as above
+
         EOF
         fi
-        
+
         cat >> release-notes.md << EOF
-        ### Usage
-        
+        ### Playwright Service
+
+        For JavaScript rendering, ar-crawl uses a local Playwright service. After installing:
+
         \`\`\`bash
-        # Crawl a single URL
+        # Start the service (default port 3033)
+        cd /path/to/playwright-service
+        npm start
+
+        # Or use Docker
+        docker-compose up -d
+        \`\`\`
+
+        The crawler will automatically use the Playwright service when configured.
+
+        ### Usage
+
+        \`\`\`bash
+        # Crawl a single URL (uses direct HTTP by default)
         ar-crawl crawl https://example.com
-        
+
+        # Use Playwright for JS-rendered content
+        ar-crawl crawl https://example.com --service playwright
+
         # Show help
         ar-crawl --help
         \`\`\`
         EOF
-      
+
       # List files that will be included in the release
       - ls -la dist/
 
@@ -224,5 +490,6 @@ steps:
         - dist/ar-crawl-linux-*.tar.gz
         - dist/ar-crawl-macos-*.tar.gz
         - dist/version.json
+        - dist/install.sh
       title: ${CI_COMMIT_TAG}
       note: release-notes.md
