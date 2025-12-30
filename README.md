@@ -1008,7 +1008,6 @@ ar-crawl/
 │   ├── scraper-interfaces.rkt     # Data structures and contracts
 │   ├── data-formatter.rkt         # Output formatting (JSON, CSV, SQLite)
 │   ├── sqlite-formatter.rkt       # SQLite database output
-│   ├── proxy-adaptor.rkt          # Legacy proxy adapters
 │   └── utils.rkt                  # Utility functions
 ├── playwright-service/            # Local Playwright browser service
 │   ├── package.json               # Node.js dependencies

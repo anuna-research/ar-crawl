@@ -114,8 +114,7 @@ test: build
 	@echo "=== Crawler Tests ==="
 	$(RACKET_BIN) -t src/site-crawler.rkt
 	$(RACKET_BIN) -t src/robots-txt.rkt
-	@echo "=== Proxy and Interface Tests ==="
-	$(RACKET_BIN) -t src/proxy-adaptor.rkt
+	@echo "=== Interface Tests ==="
 	$(RACKET_BIN) -t src/scraper-interfaces.rkt
 	@echo "All tests passed"
 
@@ -130,9 +129,6 @@ test-data:
 test-crawler:
 	$(RACKET_BIN) -t src/site-crawler.rkt
 	$(RACKET_BIN) -t src/robots-txt.rkt
-
-test-proxy:
-	$(RACKET_BIN) -t src/proxy-adaptor.rkt
 
 test-core:
 	$(RACKET_BIN) -t src/crawl-service-adaptor.rkt
