@@ -1,5 +1,5 @@
 # AR-Crawl Makefile
-.PHONY: help install build test run clean docker-build docker-run setup binary dist
+.PHONY: help install build test run clean docker-build docker-run setup binary dist dist-full playwright-setup
 
 # Default target
 help:
@@ -7,21 +7,24 @@ help:
 	@echo "================================"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  install      Install Racket dependencies"
-	@echo "  build        Build the application"
-	@echo "  binary       Build standalone binary executable"
-	@echo "  dist         Build distribution archive"
-	@echo "  test         Run tests"
-	@echo "  run          Run the CLI tool"
-	@echo "  setup        Setup configuration files"
-	@echo "  docker-build Build Docker image"
-	@echo "  docker-run   Run with Docker Compose"
-	@echo "  clean        Clean up generated files"
-	@echo "  lint         Run code quality checks"
+	@echo "  install         Install Racket dependencies"
+	@echo "  build           Build the application"
+	@echo "  binary          Build standalone binary executable"
+	@echo "  dist            Build distribution archive"
+	@echo "  dist-full       Build distribution with playwright-service"
+	@echo "  playwright-setup Setup playwright-service dependencies"
+	@echo "  test            Run tests"
+	@echo "  run             Run the CLI tool"
+	@echo "  setup           Setup configuration files"
+	@echo "  docker-build    Build Docker image"
+	@echo "  docker-run      Run with Docker Compose"
+	@echo "  clean           Clean up generated files"
+	@echo "  lint            Run code quality checks"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make setup"
 	@echo "  make run ARGS='crawl https://example.com'"
+	@echo "  make dist-full"
 	@echo "  make docker-run"
 
 # Variables
@@ -60,12 +63,41 @@ binary: install
 	$(RACO_BIN) exe -o $(DIST_DIR)/$(BINARY_NAME) $(CLI_SCRIPT)
 	@echo "Binary created at $(DIST_DIR)/$(BINARY_NAME)"
 
-# Distribution build
+# Distribution build (binary only)
 dist: binary
 	@echo "Creating distribution..."
 	$(RACO_BIN) distribute $(DIST_DIR)/$(BINARY_NAME)-dist $(DIST_DIR)/$(BINARY_NAME)
 	@cd $(DIST_DIR) && tar -czvf $(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz $(BINARY_NAME)-dist
 	@echo "Distribution created at $(DIST_DIR)/$(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz"
+
+# Full distribution build (includes playwright-service)
+dist-full: binary
+	@echo "Creating full distribution with playwright-service..."
+	$(RACO_BIN) distribute $(DIST_DIR)/$(BINARY_NAME)-dist $(DIST_DIR)/$(BINARY_NAME)
+	@echo "Bundling playwright-service..."
+	@mkdir -p $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service
+	@cp playwright-service/package.json $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service/
+	@cp playwright-service/server.js $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service/
+	@cd $(DIST_DIR) && tar -czvf $(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz $(BINARY_NAME)-dist
+	@echo "Full distribution created at $(DIST_DIR)/$(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz"
+	@echo ""
+	@echo "Archive contents:"
+	@echo "  - bin/ar-crawl           (standalone binary)"
+	@echo "  - lib/playwright-service (Node.js service for JS rendering)"
+	@echo ""
+	@echo "After extracting, users should run:"
+	@echo "  cd lib/playwright-service && npm install && npx playwright install chromium"
+
+# Setup playwright-service locally
+playwright-setup:
+	@echo "Setting up playwright-service..."
+	@if [ ! -d "playwright-service" ]; then \
+		echo "Error: playwright-service directory not found"; \
+		exit 1; \
+	fi
+	@cd playwright-service && npm install
+	@cd playwright-service && npx playwright install chromium
+	@echo "Playwright service ready. Start with: cd playwright-service && npm start"
 
 # Testing
 test: build

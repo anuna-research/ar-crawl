@@ -39,3 +39,7 @@ compiled/
 
 # Test artifacts
 test-output/
+
+# Distribution artifacts
+dist/
+*.tar.gz
