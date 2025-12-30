@@ -102,11 +102,43 @@ playwright-setup:
 # Testing
 test: build
 	@echo "Running tests..."
+	@echo "=== Core Module Tests ==="
 	$(RACKET_BIN) -t src/crawl-service-adaptor.rkt
 	$(RACKET_BIN) -t src/config-manager.rkt
 	$(RACKET_BIN) -t src/production-crawler.rkt
 	$(RACKET_BIN) -t src/utils.rkt
+	@echo "=== Data Processing Tests ==="
+	$(RACKET_BIN) -t src/html-extractor.rkt
+	$(RACKET_BIN) -t src/data-formatter.rkt
+	$(RACKET_BIN) -t src/sqlite-formatter.rkt
+	@echo "=== Crawler Tests ==="
+	$(RACKET_BIN) -t src/site-crawler.rkt
+	$(RACKET_BIN) -t src/robots-txt.rkt
+	@echo "=== Proxy and Interface Tests ==="
+	$(RACKET_BIN) -t src/proxy-adaptor.rkt
+	$(RACKET_BIN) -t src/scraper-interfaces.rkt
 	@echo "All tests passed"
+
+# Run specific test suite
+test-html:
+	$(RACKET_BIN) -t src/html-extractor.rkt
+
+test-data:
+	$(RACKET_BIN) -t src/data-formatter.rkt
+	$(RACKET_BIN) -t src/sqlite-formatter.rkt
+
+test-crawler:
+	$(RACKET_BIN) -t src/site-crawler.rkt
+	$(RACKET_BIN) -t src/robots-txt.rkt
+
+test-proxy:
+	$(RACKET_BIN) -t src/proxy-adaptor.rkt
+
+test-core:
+	$(RACKET_BIN) -t src/crawl-service-adaptor.rkt
+	$(RACKET_BIN) -t src/config-manager.rkt
+	$(RACKET_BIN) -t src/production-crawler.rkt
+	$(RACKET_BIN) -t src/utils.rkt
 
 # Setup
 setup:

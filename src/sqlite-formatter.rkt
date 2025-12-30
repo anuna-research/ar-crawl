@@ -624,5 +624,209 @@
     (lambda (out)
       (write-json export-data out))
     #:exists 'replace)
-  
+
   #t)
+
+;; ============================================================================
+;; Unit Tests
+;; ============================================================================
+
+(module+ test
+  (require rackunit
+           racket/file)
+
+  ;; Helper for temp file cleanup
+  (define (with-temp-db proc)
+    (let ([path (make-temporary-file "test-~a.db")])
+      (dynamic-wind
+        void
+        (lambda () (proc path))
+        (lambda () (when (file-exists? path) (delete-file path))))))
+
+  ;; sql-quote Tests
+  (test-case "sql-quote basic string"
+    (check-equal? (sql-quote "hello") "'hello'"))
+
+  (test-case "sql-quote escapes single quotes"
+    (check-equal? (sql-quote "it's") "'it''s'"))
+
+  (test-case "sql-quote handles double quotes in string"
+    (check-equal? (sql-quote "say \"hi\"") "'say \"hi\"'"))
+
+  (test-case "sql-quote empty string"
+    (check-equal? (sql-quote "") "''"))
+
+  (test-case "sql-quote with special characters"
+    (check-true (string? (sql-quote "test\nline"))))
+
+  ;; shell-quote Tests
+  (test-case "shell-quote wraps in double quotes"
+    (check-equal? (shell-quote "path/to/file") "\"path/to/file\""))
+
+  (test-case "shell-quote handles spaces"
+    (check-equal? (shell-quote "path with spaces") "\"path with spaces\""))
+
+  ;; url-to-filename Tests
+  (test-case "url-to-filename removes protocol"
+    (let ([filename (url-to-filename "https://example.com/path")])
+      (check-false (string-contains? filename "https://"))))
+
+  (test-case "url-to-filename replaces special chars"
+    (let ([filename (url-to-filename "https://example.com/path?query=1")])
+      (check-false (string-contains? filename "?"))
+      (check-false (string-contains? filename "="))))
+
+  (test-case "url-to-filename produces safe filename"
+    (let ([filename (url-to-filename "https://example.com/path")])
+      (check-true (regexp-match? #rx"^[a-zA-Z0-9.-]+$" filename))))
+
+  ;; generate-crawl-id Tests
+  (test-case "generate-crawl-id returns string"
+    (let ([id (generate-crawl-id (hash))])
+      (check-true (string? id))
+      (check-true (> (string-length id) 0))))
+
+  (test-case "generate-crawl-id includes seed-url domain"
+    (let ([id (generate-crawl-id (hash 'seed-url "https://example.com/page"))])
+      (check-true (string-contains? id "example.com"))))
+
+  (test-case "generate-crawl-id length limited"
+    (let ([id (generate-crawl-id (hash 'seed-url "https://very-long-domain-name.example.com/very/long/path"))])
+      (check-true (<= (string-length id) 50))))
+
+  ;; sqlite-formatter struct Tests
+  (test-case "sqlite-formatter struct creation"
+    (let ([fmt (sqlite-formatter #f "test-id" (hash) 0)])
+      (check-true (sqlite-formatter? fmt))
+      (check-equal? (sqlite-formatter-crawl-id fmt) "test-id")
+      (check-equal? (sqlite-formatter-item-count fmt) 0)))
+
+  (test-case "sqlite-formatter mutable fields"
+    (let ([fmt (sqlite-formatter #f "test-id" (hash) 0)])
+      (set-sqlite-formatter-item-count! fmt 5)
+      (check-equal? (sqlite-formatter-item-count fmt) 5)))
+
+  ;; Database Schema Tests (using actual SQLite)
+  (test-case "format-data-sqlite creates database"
+    (with-temp-db
+      (lambda (path)
+        (let ([data (list (hash 'url "http://example.com" 'content "test"))]
+              [metadata (hash 'seed-url "http://example.com")])
+          (check-true (format-data-sqlite data path metadata))
+          (check-true (file-exists? path))))))
+
+  (test-case "create-sqlite-formatter creates valid formatter"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (check-true (sqlite-formatter? fmt))
+          (check-true (connection? (sqlite-formatter-db-connection fmt)))
+          (close-sqlite-formatter fmt)))))
+
+  (test-case "write-item-sqlite increments count"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (check-equal? (sqlite-formatter-item-count fmt) 0)
+          (write-item-sqlite fmt (hash 'url "http://test.com/page1" 'title "Test"))
+          (check-equal? (sqlite-formatter-item-count fmt) 1)
+          (write-item-sqlite fmt (hash 'url "http://test.com/page2" 'title "Test2"))
+          (check-equal? (sqlite-formatter-item-count fmt) 2)
+          (close-sqlite-formatter fmt)))))
+
+  (test-case "close-sqlite-formatter updates session"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (write-item-sqlite fmt (hash 'url "http://test.com/page1"))
+          (write-item-sqlite fmt (hash 'url "http://test.com/page2"))
+          (close-sqlite-formatter fmt)
+          ;; Verify session was updated
+          (let ([db (sqlite3-connect #:database path)])
+            (let ([rows (query-rows db "SELECT pages_crawled FROM crawl_sessions")])
+              (check-equal? (vector-ref (car rows) 0) 2))
+            (disconnect db))))))
+
+  ;; Query Interface Tests
+  (test-case "query-crawl-results returns data"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (write-item-sqlite fmt (hash 'url "http://test.com/page"))
+          (close-sqlite-formatter fmt))
+        (let ([results (query-crawl-results path "SELECT * FROM crawled_pages")])
+          (check-true (list? results))
+          (check-true (> (length results) 0))))))
+
+  ;; Export Tests
+  (test-case "export-sqlite-to-json creates valid JSON"
+    (with-temp-db
+      (lambda (db-path)
+        (let ([fmt (create-sqlite-formatter db-path (hash 'seed-url "http://test.com"))])
+          (write-item-sqlite fmt (hash 'url "http://test.com/page" 'title "Test Page"))
+          (close-sqlite-formatter fmt))
+        (let ([json-path (make-temporary-file "test-~a.json")])
+          (dynamic-wind
+            void
+            (lambda ()
+              (check-true (export-sqlite-to-json db-path json-path))
+              (check-true (file-exists? json-path))
+              (let ([content (file->string json-path)])
+                (check-true (string-contains? content "http://test.com"))))
+            (lambda ()
+              (when (file-exists? json-path) (delete-file json-path))))))))
+
+  ;; Data Integrity Tests
+  (test-case "crawled page data preserved"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (write-item-sqlite fmt (hash 'url "http://test.com/page"
+                                       'title "Test Title"
+                                       'content "<html><body>test</body></html>"
+                                       'metadata (hash 'content-length 100)))
+          (close-sqlite-formatter fmt))
+        (let ([results (query-crawl-results path
+                        "SELECT url, title, content FROM crawled_pages")])
+          (check-equal? (length results) 1)
+          (let ([row (car results)])
+            (check-equal? (vector-ref row 0) "http://test.com/page")
+            (check-equal? (vector-ref row 1) "Test Title"))))))
+
+  ;; Multiple Items Test
+  (test-case "multiple items stored correctly"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (for ([i (in-range 5)])
+            (write-item-sqlite fmt (hash 'url (format "http://test.com/page~a" i)
+                                         'title (format "Page ~a" i))))
+          (close-sqlite-formatter fmt))
+        (let ([results (query-crawl-results path "SELECT COUNT(*) FROM crawled_pages")])
+          (check-equal? (vector-ref (car results) 0) 5)))))
+
+  ;; Edge Cases
+  (test-case "handles empty data list"
+    (with-temp-db
+      (lambda (path)
+        (check-true (format-data-sqlite '() path (hash 'seed-url "http://test.com"))))))
+
+  (test-case "handles special characters in content"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (write-item-sqlite fmt (hash 'url "http://test.com"
+                                       'title "Test's \"Title\""
+                                       'content "Line1\nLine2\tTab"))
+          (close-sqlite-formatter fmt)))))
+
+  (test-case "handles unicode content"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          (write-item-sqlite fmt (hash 'url "http://test.com"
+                                       'title "日本語タイトル"
+                                       'content "中文内容"))
+          (close-sqlite-formatter fmt))
+        (let ([results (query-crawl-results path "SELECT title FROM crawled_pages")])
+          (check-equal? (vector-ref (car results) 0) "日本語タイトル"))))))

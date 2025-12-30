@@ -9,7 +9,7 @@
 |#
 
 (require racket/contract
-         (except-in racket/hash hash-filter)
+         racket/hash
          racket/set
          (prefix-in str: racket/string)
          net/url
@@ -412,3 +412,160 @@
 
 ;; Export the utility function
 (provide print-crawl-statistics)
+
+;; ============================================================================
+;; Unit Tests
+;; ============================================================================
+
+(module+ test
+  (require rackunit)
+
+  ;; Configuration Tests
+  (test-case "make-site-crawl-config creates valid config"
+    (let ([config (make-site-crawl-config)])
+      (check-true (site-crawl-config? config))
+      (check-equal? (site-crawl-config-max-pages config) 100)
+      (check-equal? (site-crawl-config-max-depth config) 3)
+      (check-true (site-crawl-config-same-domain-only config))
+      (check-true (site-crawl-config-respect-robots config))))
+
+  (test-case "make-site-crawl-config with custom values"
+    (let ([config (make-site-crawl-config
+                   #:max-pages 50
+                   #:max-depth 5
+                   #:url-pattern "/blog/.*"
+                   #:same-domain-only #f
+                   #:respect-robots #f
+                   #:crawl-delay-ms 2000)])
+      (check-equal? (site-crawl-config-max-pages config) 50)
+      (check-equal? (site-crawl-config-max-depth config) 5)
+      (check-false (site-crawl-config-same-domain-only config))
+      (check-false (site-crawl-config-respect-robots config))
+      (check-equal? (site-crawl-config-crawl-delay-ms config) 2000)))
+
+  (test-case "make-site-crawl-config converts string pattern to regexp"
+    (let ([config (make-site-crawl-config #:url-pattern ".*\\.html$")])
+      (check-true (regexp? (site-crawl-config-url-pattern config)))))
+
+  ;; URL Processing Tests
+  (test-case "get-domain extracts domain correctly"
+    (check-equal? (get-domain "https://example.com/path") "example.com")
+    (check-equal? (get-domain "http://sub.example.com:8080/path") "sub.example.com")
+    (check-equal? (get-domain "https://example.com") "example.com"))
+
+  (test-case "get-domain handles invalid URLs"
+    (check-equal? (get-domain "not-a-url") ""))
+
+  (test-case "normalize-url removes fragments"
+    (let ([normalized (normalize-url "http://example.com/page#section"
+                                     "http://example.com")])
+      (check-false (string-contains? normalized "#"))))
+
+  (test-case "normalize-url resolves relative URLs"
+    (let ([normalized (normalize-url "/about" "http://example.com/page")])
+      (check-equal? normalized "http://example.com/about")))
+
+  (test-case "normalize-url removes trailing slash"
+    (let ([normalized (normalize-url "http://example.com/path/"
+                                     "http://example.com")])
+      (check-equal? normalized "http://example.com/path")))
+
+  (test-case "normalize-url preserves root path"
+    (let ([normalized (normalize-url "http://example.com/"
+                                     "http://example.com")])
+      (check-equal? normalized "http://example.com/")))
+
+  (test-case "get-url-path extracts path"
+    (check-equal? (get-url-path "http://example.com/page/sub") "/page/sub")
+    (check-equal? (get-url-path "http://example.com") "/")
+    (check-equal? (get-url-path "http://example.com/") "/"))
+
+  ;; Link Filtering Tests
+  (test-case "filter-urls filters by pattern"
+    (let ([urls '("http://example.com/blog/post1"
+                  "http://example.com/about"
+                  "http://example.com/blog/post2")]
+          [pattern (regexp "/blog/")])
+      (let ([filtered (filter-urls urls pattern "http://example.com" #f)])
+        (check-equal? (length filtered) 2))))
+
+  (test-case "filter-urls filters by domain"
+    (let ([urls '("http://example.com/page"
+                  "http://other.com/page"
+                  "http://example.com/page2")])
+      (let ([filtered (filter-urls urls (regexp ".*") "http://example.com" #t)])
+        (check-equal? (length filtered) 2))))
+
+  (test-case "filter-urls removes static resources"
+    (let ([urls '("http://example.com/page"
+                  "http://example.com/style.css"
+                  "http://example.com/script.js"
+                  "http://example.com/image.jpg"
+                  "http://example.com/doc.pdf")])
+      (let ([filtered (filter-urls urls (regexp ".*") "http://example.com" #f)])
+        (check-equal? (length filtered) 1))))
+
+  (test-case "filter-urls handles empty list"
+    (let ([filtered (filter-urls '() (regexp ".*") "http://example.com" #f)])
+      (check-equal? filtered '())))
+
+  (test-case "filter-urls handles invalid URLs"
+    (let ([urls '("http://example.com/page" "" "not-a-url")])
+      (let ([filtered (filter-urls urls (regexp ".*") "http://example.com" #f)])
+        (check-equal? (length filtered) 1))))
+
+  ;; Link Extraction Tests
+  (test-case "extract-links-from-result extracts links"
+    (let ([result (hash 'links '("http://a.com" "http://b.com"))])
+      (check-equal? (extract-links-from-result result)
+                   '("http://a.com" "http://b.com"))))
+
+  (test-case "extract-links-from-result handles missing links"
+    (let ([result (hash 'content "no links")])
+      (check-equal? (extract-links-from-result result) '())))
+
+  (test-case "extract-links-from-result filters non-strings"
+    (let ([result (hash 'links '("http://a.com" 123 #f "http://b.com"))])
+      (check-equal? (extract-links-from-result result)
+                   '("http://a.com" "http://b.com"))))
+
+  ;; Data Structure Tests
+  (test-case "site-crawl-state struct fields"
+    (let ([state (site-crawl-state
+                  '("http://example.com")   ; url-queue
+                  (set)                      ; visited-urls
+                  (hash)                     ; crawled-pages
+                  0                          ; current-depth
+                  0                          ; pages-crawled
+                  0                          ; start-time
+                  "example.com"              ; base-domain
+                  (hash)                     ; robots-cache
+                  #f)])                      ; robots-txt
+      (check-true (site-crawl-state? state))
+      (check-equal? (site-crawl-state-url-queue state) '("http://example.com"))
+      (check-equal? (site-crawl-state-pages-crawled state) 0)
+      (check-equal? (site-crawl-state-base-domain state) "example.com")))
+
+  (test-case "site-crawl-result struct fields"
+    (let ([result (site-crawl-result
+                   '()                       ; pages
+                   '()                       ; failed-urls
+                   (hash 'pages-crawled 0)   ; statistics
+                   (hash))])                 ; metadata
+      (check-true (site-crawl-result? result))
+      (check-equal? (site-crawl-result-pages result) '())
+      (check-equal? (site-crawl-result-failed-urls result) '())))
+
+  ;; Edge Cases
+  (test-case "handles URL with special characters"
+    (let ([normalized (normalize-url "http://example.com/path?q=hello%20world"
+                                     "http://example.com")])
+      (check-true (string? normalized))))
+
+  (test-case "handles international domain"
+    (let ([domain (get-domain "https://例え.jp/page")])
+      (check-true (string? domain))))
+
+  (test-case "handles URL with port"
+    (let ([domain (get-domain "http://localhost:3000/api")])
+      (check-equal? domain "localhost"))))
