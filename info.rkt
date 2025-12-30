@@ -5,5 +5,6 @@
                "html-parsing"
                "uuid"
                "gregor"
-               "http123"))
+               "http123"
+               "sxml"))
 (define build-deps '("rackunit-lib"))
