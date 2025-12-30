@@ -515,6 +515,101 @@
   (printf "  - id=\"...\"    -> //tag[@id='value']~n")
   (printf "~nUse with: ar-crawl extract ~a --xpath-map '{\"field\": \"//xpath\"}'~n" input-file))
 
+;; @function{cmd-probe}
+;; @description{Probe a URL to measure page load performance and suggest scraping parameters}
+(define (cmd-probe url
+                   #:verbose [verbose #f]
+                   #:output [output-file #f])
+
+  ;; Start playwright service (probe requires it)
+  (start-playwright-service #:verbose verbose)
+
+  (printf "Probing URL: ~a~n" url)
+  (when verbose
+    (printf "Measuring page load timing metrics...~n"))
+
+  ;; Call the playwright probe endpoint
+  (define probe-url (format "http://localhost:~a/probe" PLAYWRIGHT_SERVICE_PORT))
+
+  (define response
+    (with-handlers ([exn:fail? (lambda (e)
+                                  (printf "Probe failed: ~a~n" (exn-message e))
+                                  #f)])
+      (define req-data (jsexpr->string (hash 'url url)))
+      (define port (post-pure-port
+                    (string->url probe-url)
+                    (string->bytes/utf-8 req-data)
+                    (list "Content-Type: application/json")))
+      (define raw-response (port->string port))
+      (close-input-port port)
+      (string->jsexpr raw-response)))
+
+  (when (not response)
+    (printf "Failed to probe URL. Is the playwright service running?~n")
+    (exit 1))
+
+  ;; Extract key metrics (Racket json library uses symbols for keys)
+  (define timing (hash-ref response 'timing (hash)))
+  (define resources (hash-ref response 'resources (hash)))
+  (define recommendations (hash-ref response 'recommendations (hash)))
+  (define probe-time (hash-ref response 'probeTime 0))
+
+  ;; Display results
+  (printf "~n=== Page Load Metrics ===~n~n")
+
+  (printf "Timing:~n")
+  (printf "  DOM Content Loaded: ~a ms~n" (hash-ref timing 'domContentLoaded 0))
+  (printf "  Page Load Complete: ~a ms~n" (hash-ref timing 'loadComplete 0))
+  (printf "  Network Idle:       ~a ms~n" (hash-ref timing 'networkIdleTime 0))
+  (printf "  JS Execution (est): ~a ms~n" (hash-ref timing 'jsExecutionEstimate 0))
+
+  (when verbose
+    (define perf (hash-ref timing 'performance (hash)))
+    (printf "~n  Performance API Details:~n")
+    (printf "    TTFB:             ~a ms~n" (hash-ref perf 'ttfb 0))
+    (printf "    DOM Parsing:      ~a ms~n" (hash-ref perf 'domParsing 0))
+    (printf "    DOM Interactive:  ~a ms~n" (hash-ref perf 'domInteractive 0))
+    (printf "    DOM Complete:     ~a ms~n" (hash-ref perf 'domComplete 0)))
+
+  (printf "~nResources:~n")
+  (printf "  Total Requests:     ~a~n" (hash-ref resources 'totalRequests 0))
+  (define total-bytes (hash-ref resources 'totalTransferSize 0))
+  (printf "  Total Transfer:     ~a KB~n" (quotient total-bytes 1024))
+
+  (when verbose
+    (define by-type (hash-ref resources 'byType (hash)))
+    (printf "~n  By Resource Type:~n")
+    (for ([(type stats) (in-hash by-type)])
+      (printf "    ~a: ~a requests, ~a KB~n"
+              type
+              (hash-ref stats 'count 0)
+              (quotient (hash-ref stats 'totalSize 0) 1024))))
+
+  (printf "~n=== Recommended Scraping Parameters ===~n~n")
+  (printf "  --pw-delay ~a        # Wait for JS to complete~n"
+          (hash-ref recommendations 'pwDelay 5000))
+  (printf "  --pw-scroll-delay ~a  # Delay between scrolls~n"
+          (hash-ref recommendations 'scrollDelay 1000))
+  (printf "  --timeout ~a      # Request timeout~n"
+          (hash-ref recommendations 'timeout 30000))
+
+  (printf "~nProbe completed in ~a ms~n" probe-time)
+
+  ;; Output to file if requested
+  (when output-file
+    (define output-data
+      (hash 'url url
+            'timing timing
+            'resources resources
+            'recommendations recommendations
+            'probeTime probe-time
+            'timestamp (generate-timestamp)))
+    (call-with-output-file output-file
+      (lambda (port)
+        (write-json output-data port #:indent 2))
+      #:exists 'replace)
+    (printf "Results saved to: ~a~n" output-file)))
+
 ;; @function{extracted-results->csv}
 ;; @description{Convert extracted results to CSV format}
 (define (extracted-results->csv results port)
@@ -917,6 +1012,20 @@
    #:args remaining
    remaining))
 
+;; @function{parse-probe-args}
+;; @description{Parse probe command arguments after the URL}
+(define (parse-probe-args args)
+  (command-line
+   #:program "ar-crawl probe"
+   #:argv args
+   #:once-each
+   [("-v" "--verbose") "Enable verbose output with detailed timing"
+    (verbose-mode #t)]
+   [("-o" "--output") file "Save results to JSON file"
+    (output-file-param file)]
+   #:args remaining
+   remaining))
+
 ;; @function{parse-crawl-args}
 ;; @description{Parse crawl command arguments after the URL}
 (define (parse-crawl-args args)
@@ -1120,6 +1229,19 @@
                     #:index (sample-index-param)
                     #:length (sample-length-param))]
 
+       [(probe)
+        (when (empty? post-cmd-args)
+          (printf "Error: URL required for probe command~n~n")
+          (printf "Usage: ar-crawl probe <url> [options]~n")
+          (printf "Run 'ar-crawl help probe' for more information.~n")
+          (exit 1))
+        (define probe-target-url (car post-cmd-args))
+        (parse-probe-args (cdr post-cmd-args))
+        (with-playwright-cleanup
+          (cmd-probe probe-target-url
+                     #:verbose (verbose-mode)
+                     #:output (output-file-param)))]
+
        [(help)
         (if (empty? post-cmd-args)
             (show-main-help)
@@ -1175,6 +1297,7 @@
   (printf "COMMANDS~n")
   (printf "  crawl <url>         Crawl a single URL and extract content~n")
   (printf "  crawl-site <url>    Crawl an entire website following links~n")
+  (printf "  probe <url>         Measure page load metrics to inform scraping params~n")
   (printf "  sample <file>       Show sample HTML from crawl results (to figure out XPaths)~n")
   (printf "  extract <file>      Extract structured data from crawl results using XPath~n")
   (printf "  health              Check health status of configured services~n")
@@ -1555,12 +1678,57 @@
   (printf "  # Show more HTML content~n")
   (printf "  ar-crawl sample results.json --length 10000~n~n"))
 
+;; @function{show-probe-help}
+;; @description{Show help for probe command}
+(define (show-probe-help)
+  (printf "~nPROBE - Measure page load performance~n")
+  (printf "======================================~n~n")
+  (printf "Probe a URL using Playwright to measure page load timing metrics.~n")
+  (printf "Use this to determine optimal scraping parameters for a site.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl probe <url> [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -v, --verbose       Show detailed timing breakdown~n")
+  (printf "  -o, --output FILE   Save results to JSON file~n~n")
+
+  (printf "METRICS MEASURED~n")
+  (printf "  DOM Content Loaded  Time until DOMContentLoaded event fires~n")
+  (printf "  Page Load Complete  Time until load event fires~n")
+  (printf "  Network Idle        Time until no network activity for 500ms~n")
+  (printf "  JS Execution (est)  Estimated JavaScript execution time~n~n")
+
+  (printf "VERBOSE MODE DETAILS~n")
+  (printf "  TTFB               Time to first byte~n")
+  (printf "  DOM Parsing        Time spent parsing DOM~n")
+  (printf "  Resource breakdown Requests and transfer size by type~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Basic probe~n")
+  (printf "  ar-crawl probe https://example.com~n~n")
+  (printf "  # Verbose probe with detailed breakdown~n")
+  (printf "  ar-crawl probe https://spa-site.com -v~n~n")
+  (printf "  # Save results for later analysis~n")
+  (printf "  ar-crawl probe https://example.com -o probe-results.json~n~n")
+
+  (printf "OUTPUT~n")
+  (printf "  The command outputs timing metrics and recommended parameters:~n~n")
+  (printf "    --pw-delay N        Recommended delay after page load~n")
+  (printf "    --pw-scroll-delay N Recommended delay between scrolls~n")
+  (printf "    --timeout N         Recommended request timeout~n~n")
+
+  (printf "NOTE~n")
+  (printf "  This command uses Playwright and requires the playwright service.~n")
+  (printf "  It will be started automatically if not running.~n~n"))
+
 ;; @function{show-command-help}
 ;; @description{Show help for a specific command}
 (define (show-command-help command)
   (case (if (string? command) (string->symbol command) command)
     [(crawl) (show-crawl-help)]
     [(crawl-site) (show-crawl-site-help)]
+    [(probe) (show-probe-help)]
     [(extract) (show-extract-help)]
     [(sample) (show-sample-help)]
     [(health) (show-health-help)]
@@ -1570,7 +1738,7 @@
     [(monitor) (show-monitor-help)]
     [else
      (printf "Unknown command: ~a~n~n" command)
-     (printf "Available commands: crawl, crawl-site, extract, sample, health, test, config, services, monitor~n")
+     (printf "Available commands: crawl, crawl-site, probe, extract, sample, health, test, config, services, monitor~n")
      (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters
