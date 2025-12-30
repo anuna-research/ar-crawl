@@ -598,6 +598,12 @@ Resources:
   Total Requests:     250
   Total Transfer:     2400 KB
 
+=== Content Analysis ===
+
+  Content Type: Dynamic/SPA
+  The page relies heavily on JavaScript for content.
+  Recommendation: Use -s playwright for full content
+
 === Recommended Scraping Parameters ===
 
   --pw-delay 8500        # Wait for JS to complete
@@ -605,6 +611,34 @@ Resources:
   --timeout 30000        # Request timeout
 
 Probe completed in 6386 ms
+```
+
+### Content Analysis
+
+The probe command automatically analyzes page characteristics to determine if content is static or dynamically loaded via JavaScript. This helps you choose the right crawling service.
+
+**Content Types:**
+
+| Type | Score | Description | Recommendation |
+|------|-------|-------------|----------------|
+| Static | 0-19 | Minimal JavaScript, server-rendered HTML | Use `-s direct` for speed |
+| Light JS | 20-49 | Some JavaScript, may work without browser | Try `-s direct` first |
+| Dynamic/SPA | 50+ | Heavy JavaScript, content loaded dynamically | Use `-s playwright` |
+
+**Scoring Factors:**
+
+| Factor | Points | Threshold |
+|--------|--------|-----------|
+| JS Execution Time | +30 | > 500ms |
+| XHR/Fetch Requests | +30 | Any async requests |
+| Script Count | +25 | > 20 scripts |
+| Network Idle Delay | +15 | > 1000ms after load |
+
+In verbose mode (`-v`), you can see the exact score and contributing factors:
+
+```
+Dynamic Score: 100/100
+Factors: JS=2854ms, XHR/Fetch=7, Scripts=115, NetworkDelay=30011ms
 ```
 
 ### Verbose Mode Details
