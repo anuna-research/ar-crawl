@@ -10,7 +10,7 @@ steps:
       - apt-get update --allow-releaseinfo-change && apt-get install -y zip build-essential libffi-dev curl gcc g++ make autoconf libtool
 
       # Install Racket packages from info.rkt
-      - raco pkg install --auto --deps search-auto
+      - raco pkg install --auto --deps search-auto .
 
       # Create directories
       - mkdir -p dist
