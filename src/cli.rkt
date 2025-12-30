@@ -1799,6 +1799,371 @@
 (define sample-index-param (make-parameter 0))
 (define sample-length-param (make-parameter 5000))
 
+;; ============================================================================
+;; Unit Tests
+;; ============================================================================
+
+(module+ test
+  (require rackunit)
+
+  ;; -------------------------------------------------------------------------
+  ;; Argument Parsing Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "find-command-index - command first"
+    (check-equal? (find-command-index '("crawl" "http://example.com")) 0))
+
+  (test-case "find-command-index - flags before command"
+    ;; -v is a flag, --config is a flag, file.json is a positional (command), crawl is also positional
+    ;; The first non-flag is file.json at index 2
+    (check-equal? (find-command-index '("-v" "--config" "file.json" "crawl")) 2))
+
+  (test-case "find-command-index - no command"
+    (check-false (find-command-index '("-v" "--help"))))
+
+  (test-case "find-command-index - empty args"
+    (check-false (find-command-index '())))
+
+  (test-case "split-args-at-command - basic"
+    (define-values (pre cmd post) (split-args-at-command '("crawl" "http://test.com")))
+    (check-equal? pre '())
+    (check-equal? cmd "crawl")
+    (check-equal? post '("http://test.com")))
+
+  (test-case "split-args-at-command - with flags"
+    ;; -v is a flag, -c is a flag, config.json is the first non-flag (becomes command)
+    (define-values (pre cmd post)
+      (split-args-at-command '("-v" "-c" "config.json" "crawl-site" "http://test.com" "--max-pages" "10")))
+    (check-equal? pre '("-v" "-c"))
+    (check-equal? cmd "config.json")
+    (check-equal? post '("crawl-site" "http://test.com" "--max-pages" "10")))
+
+  (test-case "split-args-at-command - no command"
+    (define-values (pre cmd post) (split-args-at-command '("-v" "--help")))
+    (check-equal? pre '("-v" "--help"))
+    (check-false cmd)
+    (check-equal? post '()))
+
+  (test-case "split-args-at-command - empty"
+    (define-values (pre cmd post) (split-args-at-command '()))
+    (check-equal? pre '())
+    (check-false cmd)
+    (check-equal? post '()))
+
+  ;; -------------------------------------------------------------------------
+  ;; Data Conversion Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "job-results->hash conversion"
+    (define results (job-results '((hash 'url "http://test.com"))
+                                 (hash 'job-id "123")
+                                 '()))
+    (define h (job-results->hash results))
+    (check-true (hash? h))
+    (check-true (hash-has-key? h 'data))
+    (check-true (hash-has-key? h 'metadata))
+    (check-true (hash-has-key? h 'errors))
+    (check-true (hash-has-key? h 'timestamp)))
+
+  (test-case "job-results->hash - empty results"
+    (define results (job-results '() (hash) '()))
+    (define h (job-results->hash results))
+    (check-equal? (hash-ref h 'data) '())
+    (check-equal? (hash-ref h 'errors) '()))
+
+  (test-case "health-status->hash conversion"
+    ;; Use health-check to get a real health-status since constructor isn't exported
+    (setup-crawler #f #f)
+    (define crawler (create-crawler-from-config))
+    (define health (health-check crawler))
+    (define h (health-status->hash health))
+    (check-true (hash? h))
+    (check-true (symbol? (hash-ref h 'status)))
+    (check-true (number? (hash-ref h 'uptime)))
+    (check-true (number? (hash-ref h 'last_check)))
+    (check-true (hash? (hash-ref h 'services))))
+
+  (test-case "results->csv basic"
+    (define results (job-results '() (hash) '()))
+    (define csv (results->csv results))
+    (check-true (string? csv)))
+
+  (test-case "results->markdown basic"
+    (define results (job-results '() (hash) '()))
+    (define md (results->markdown results))
+    (check-true (string? md))
+    (check-true (string-contains? md "# Crawl Results")))
+
+  (test-case "results->markdown with data"
+    (define results (job-results '((hash 'content "test")) (hash) '()))
+    (define md (results->markdown results))
+    (check-true (string-contains? md "Data extracted successfully")))
+
+  ;; -------------------------------------------------------------------------
+  ;; extracted-results->csv Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "extracted-results->csv - basic"
+    (define results (list (hash 'name "Product 1" 'price "$10")
+                          (hash 'name "Product 2" 'price "$20")))
+    (define out (open-output-string))
+    (extracted-results->csv results out)
+    (define csv (get-output-string out))
+    (check-true (string-contains? csv "name"))
+    (check-true (string-contains? csv "price"))
+    (check-true (string-contains? csv "Product 1")))
+
+  (test-case "extracted-results->csv - empty"
+    (define out (open-output-string))
+    (extracted-results->csv '() out)
+    (check-equal? (get-output-string out) ""))
+
+  (test-case "extracted-results->csv - escapes commas"
+    (define results (list (hash 'name "Product, with comma" 'price "$10")))
+    (define out (open-output-string))
+    (extracted-results->csv results out)
+    (define csv (get-output-string out))
+    (check-true (string-contains? csv "\"")))
+
+  (test-case "extracted-results->csv - handles lists"
+    (define results (list (hash 'tags '("a" "b" "c"))))
+    (define out (open-output-string))
+    (extracted-results->csv results out)
+    (define csv (get-output-string out))
+    (check-true (string-contains? csv "a; b; c")))
+
+  ;; -------------------------------------------------------------------------
+  ;; XPath Filter Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "apply-xpath-filter-to-job-results"
+    (define results (job-results
+                     (list (hash 'content "<html><body><p>test</p></body></html>"
+                                 'url "http://test.com"))
+                     (hash 'job-id "123")
+                     '()))
+    (define filtered (apply-xpath-filter-to-job-results results "//p"))
+    (check-true (job-results? filtered))
+    (check-equal? (length (job-results-data filtered)) 1))
+
+  ;; -------------------------------------------------------------------------
+  ;; Version and Help Output Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "show-version outputs version"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-version))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "ar-crawl"))
+    (check-true (string-contains? output AR-CRAWL-VERSION)))
+
+  (test-case "show-main-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-main-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "AR-CRAWL"))
+    (check-true (string-contains? output "USAGE"))
+    (check-true (string-contains? output "COMMANDS"))
+    (check-true (string-contains? output "crawl"))
+    (check-true (string-contains? output "crawl-site")))
+
+  (test-case "show-crawl-help outputs crawl help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-crawl-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "CRAWL"))
+    (check-true (string-contains? output "USAGE"))
+    (check-true (string-contains? output "--service")))
+
+  (test-case "show-crawl-site-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-crawl-site-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "CRAWL-SITE"))
+    (check-true (string-contains? output "--max-pages")))
+
+  (test-case "show-health-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-health-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "HEALTH")))
+
+  (test-case "show-test-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-test-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "TEST")))
+
+  (test-case "show-config-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-config-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "CONFIG"))
+    (check-true (string-contains? output "init")))
+
+  (test-case "show-services-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-services-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "SERVICES"))
+    (check-true (string-contains? output "direct"))
+    (check-true (string-contains? output "playwright")))
+
+  (test-case "show-monitor-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-monitor-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "MONITOR")))
+
+  (test-case "show-extract-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-extract-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "EXTRACT"))
+    (check-true (string-contains? output "--xpath-map")))
+
+  (test-case "show-sample-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-sample-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "SAMPLE")))
+
+  (test-case "show-probe-help outputs help"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-probe-help))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "PROBE")))
+
+  (test-case "show-command-help dispatches correctly"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-command-help "crawl"))
+    (check-true (string-contains? (get-output-string out) "CRAWL")))
+
+  (test-case "show-command-help handles unknown command"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (show-command-help "unknown-cmd"))
+    (check-true (string-contains? (get-output-string out) "Unknown command")))
+
+  ;; -------------------------------------------------------------------------
+  ;; Parameter Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "parameters have correct defaults"
+    (check-false (verbose-mode))
+    (check-false (config-file-path))
+    (check-equal? (selected-services) '())
+    (check-false (pw-scroll))
+    (check-equal? (pw-scroll-count) 0)
+    (check-equal? (pw-scroll-delay) 1000)
+    (check-false (pw-click-selector))
+    (check-equal? (pw-click-count) 1)
+    (check-equal? (pw-delay) 5000)
+    (check-equal? (max-pages) 50)
+    (check-equal? (max-depth) 3)
+    (check-equal? (url-pattern) ".*")
+    (check-true (same-domain-only))
+    (check-equal? (crawl-delay-ms) 1000)
+    (check-false (output-file-param))
+    (check-equal? (output-format-param) 'json)
+    (check-false (xpath-filter-param))
+    (check-equal? (sample-index-param) 0)
+    (check-equal? (sample-length-param) 5000))
+
+  ;; -------------------------------------------------------------------------
+  ;; Playwright Service Detection Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "get-playwright-service-dir returns path"
+    (define dir (get-playwright-service-dir))
+    (check-true (path-string? dir)))
+
+  (test-case "playwright-service-installed? returns boolean"
+    (define result (playwright-service-installed?))
+    (check-true (boolean? result)))
+
+  ;; -------------------------------------------------------------------------
+  ;; Setup and Configuration Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "setup-crawler with no config"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (setup-crawler #f #f))
+    (check-true (hash? global-config)))
+
+  (test-case "setup-crawler sets global-config"
+    (setup-crawler #f #f)
+    (check-true (hash? global-config)))
+
+  (test-case "create-crawler-from-config creates crawler"
+    (setup-crawler #f #f)
+    (define crawler (create-crawler-from-config))
+    ;; Verify crawler works by calling get-crawler-status
+    (define status (get-crawler-status crawler))
+    ;; status has active-jobs accessor
+    (check-true (number? (crawler-status-active-jobs status))))
+
+  ;; -------------------------------------------------------------------------
+  ;; cmd-services Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "cmd-services lists services"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (cmd-services #:verbose #f))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "Available Crawling Services"))
+    (check-true (string-contains? output "Total services")))
+
+  (test-case "cmd-services verbose mode"
+    (define out (open-output-string))
+    (parameterize ([current-output-port out])
+      (cmd-services #:verbose #t))
+    (define output (get-output-string out))
+    (check-true (string-contains? output "Status:")))
+
+  ;; -------------------------------------------------------------------------
+  ;; ensure-playwright-if-needed Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "ensure-playwright-if-needed with empty services"
+    ;; Should not error with empty list
+    (ensure-playwright-if-needed '() #:verbose #f))
+
+  (test-case "ensure-playwright-if-needed without playwright"
+    ;; Should not start playwright if not in list
+    (ensure-playwright-if-needed '(direct firecrawl) #:verbose #f))
+
+  ;; -------------------------------------------------------------------------
+  ;; stop-playwright-service Tests
+  ;; -------------------------------------------------------------------------
+
+  (test-case "stop-playwright-service when not running"
+    ;; Should not error when no process running
+    (stop-playwright-service))
+
+  ;; -------------------------------------------------------------------------
+  ;; Version Constant Test
+  ;; -------------------------------------------------------------------------
+
+  (test-case "AR-CRAWL-VERSION is defined"
+    (check-true (string? AR-CRAWL-VERSION))
+    (check-true (> (string-length AR-CRAWL-VERSION) 0))))
+
 ;; Run main if this file is executed directly
 (module+ main
   ;; Register cleanup handler for playwright service
