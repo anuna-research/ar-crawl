@@ -6,8 +6,11 @@ steps:
   - name: build-executables
     image: racket/racket:8.16-full
     commands:
-      # Install dependencies
+      # Install system dependencies
       - apt-get update --allow-releaseinfo-change && apt-get install -y zip build-essential libffi-dev curl gcc g++ make autoconf libtool
+
+      # Install Racket packages
+      - raco pkg install --auto html-parsing uuid gregor http123
 
       # Create directories
       - mkdir -p dist
