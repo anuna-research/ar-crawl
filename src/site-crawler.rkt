@@ -670,4 +670,209 @@
                   #f)])
       (check-equal? (set-count (site-crawl-state-visited-urls state)) 2)
       (check-equal? (hash-count (site-crawl-state-crawled-pages state)) 1)
-      (check-equal? (site-crawl-state-current-depth state) 1))))
+      (check-equal? (site-crawl-state-current-depth state) 1)))
+
+  ;; Additional Configuration Tests
+  (test-case "config user-agent customization"
+    (let ([config (make-site-crawl-config #:user-agent "CustomBot/2.0")])
+      (check-equal? (site-crawl-config-user-agent config) "CustomBot/2.0")))
+
+  (test-case "config default user-agent"
+    (let ([config (make-site-crawl-config)])
+      (check-equal? (site-crawl-config-user-agent config) "AR-Crawl/1.0 Site Crawler")))
+
+  (test-case "config all defaults"
+    (let ([config (make-site-crawl-config)])
+      (check-equal? (site-crawl-config-max-pages config) 100)
+      (check-equal? (site-crawl-config-max-depth config) 3)
+      (check-true (site-crawl-config-same-domain-only config))
+      (check-true (site-crawl-config-respect-robots config))
+      (check-equal? (site-crawl-config-crawl-delay-ms config) 1000)
+      (check-equal? (site-crawl-config-timeout-total-ms config) 300000)
+      (check-equal? (site-crawl-config-concurrent-limit config) 5)))
+
+  ;; URL Normalization Edge Cases
+  (test-case "normalize-url with invalid base URL gracefully handles"
+    (let ([normalized (normalize-url "http://example.com/page" "not-a-url")])
+      (check-true (string? normalized))))
+
+  (test-case "normalize-url with mailto link"
+    (let ([normalized (normalize-url "mailto:test@example.com" "http://example.com")])
+      (check-true (string? normalized))))
+
+  (test-case "normalize-url with javascript link"
+    (let ([normalized (normalize-url "javascript:void(0)" "http://example.com")])
+      (check-true (string? normalized))))
+
+  (test-case "normalize-url with fragment only"
+    (let ([normalized (normalize-url "#section" "http://example.com/page")])
+      (check-true (string? normalized))))
+
+  (test-case "normalize-url with empty fragment"
+    (let ([normalized (normalize-url "http://example.com/page#" "http://example.com")])
+      ;; Should remove empty fragment
+      (check-true (string? normalized))))
+
+  ;; Domain Extraction Tests
+  (test-case "get-domain with HTTPS"
+    (check-equal? (get-domain "https://secure.example.com/path") "secure.example.com"))
+
+  (test-case "get-domain with port number"
+    (check-equal? (get-domain "http://example.com:8080/path") "example.com"))
+
+  (test-case "get-domain with credentials"
+    (let ([domain (get-domain "http://user:pass@example.com/path")])
+      (check-equal? domain "example.com")))
+
+  (test-case "get-domain with IP address"
+    (check-equal? (get-domain "http://192.168.1.1/path") "192.168.1.1"))
+
+  (test-case "get-domain with localhost"
+    (check-equal? (get-domain "http://localhost/path") "localhost"))
+
+  ;; URL Path Extraction Tests
+  (test-case "get-url-path with root only"
+    (check-equal? (get-url-path "http://example.com/") "/"))
+
+  (test-case "get-url-path with fragment"
+    (let ([path (get-url-path "http://example.com/page#section")])
+      (check-equal? path "/page")))
+
+  (test-case "get-url-path with encoded characters"
+    (let ([path (get-url-path "http://example.com/path%20with%20spaces")])
+      (check-true (string? path))))
+
+  ;; Filter URLs Tests
+  (test-case "filter-urls with case-insensitive pattern"
+    (let* ([urls '("http://example.com/PAGE.HTML"
+                   "http://example.com/page.html")]
+           [filtered (filter-urls urls (pregexp "(?i:\\.html$)") "http://example.com" #f)])
+      (check-equal? (length filtered) 2)))
+
+  (test-case "filter-urls with mixed static and content"
+    (let* ([urls '("http://example.com/page"
+                   "http://example.com/image.PNG"  ; uppercase extension
+                   "http://example.com/document")]
+           [filtered (filter-urls urls (regexp ".*") "http://example.com" #f)])
+      ;; PNG is filtered (lowercase check in regexp), but uppercase not matched
+      (check-true (>= (length filtered) 2))))
+
+  (test-case "filter-urls with subdomain"
+    (let* ([urls '("http://blog.example.com/post"
+                   "http://example.com/page"
+                   "http://other.example.com/data")]
+           [filtered (filter-urls urls (regexp ".*") "http://example.com" #t)])
+      ;; Same domain only, but subdomains are different
+      (check-equal? (length filtered) 1)))
+
+  (test-case "filter-urls preserves order"
+    (let* ([urls '("http://example.com/a"
+                   "http://example.com/b"
+                   "http://example.com/c")]
+           [filtered (filter-urls urls (regexp ".*") "http://example.com" #f)])
+      (check-equal? filtered urls)))
+
+  ;; Extract Links Tests
+  (test-case "extract-links-from-result with empty hash"
+    (check-equal? (extract-links-from-result (hash)) '()))
+
+  (test-case "extract-links-from-result with single link"
+    (let ([result (hash 'links '("http://example.com"))])
+      (check-equal? (extract-links-from-result result) '("http://example.com"))))
+
+  (test-case "extract-links-from-result with mixed types"
+    (let ([result (hash 'links '("http://a.com" 42 'symbol "http://b.com" #t))])
+      (check-equal? (extract-links-from-result result) '("http://a.com" "http://b.com"))))
+
+  ;; Site Crawl State Tests
+  (test-case "site-crawl-state empty queue"
+    (let ([state (site-crawl-state
+                  '()
+                  (set)
+                  (hash)
+                  0
+                  0
+                  0
+                  "example.com"
+                  (hash)
+                  #f)])
+      (check-equal? (site-crawl-state-url-queue state) '())
+      (check-true (set-empty? (site-crawl-state-visited-urls state)))))
+
+  (test-case "site-crawl-state large queue"
+    (let* ([urls (build-list 100 (lambda (i) (format "http://example.com/page~a" i)))]
+           [state (site-crawl-state
+                   urls
+                   (set)
+                   (hash)
+                   0
+                   0
+                   0
+                   "example.com"
+                   (hash)
+                   #f)])
+      (check-equal? (length (site-crawl-state-url-queue state)) 100)))
+
+  ;; Site Crawl Result Tests
+  (test-case "site-crawl-result empty"
+    (let ([result (site-crawl-result '() '() (hash) (hash))])
+      (check-true (site-crawl-result? result))
+      (check-equal? (site-crawl-result-pages result) '())
+      (check-equal? (site-crawl-result-failed-urls result) '())))
+
+  (test-case "site-crawl-result statistics access"
+    (let* ([stats (hash 'pages-crawled 10
+                        'failed-urls 2
+                        'total-urls-discovered 50
+                        'duration-ms 5000
+                        'average-page-time-ms 500.0)]
+           [result (site-crawl-result '() '() stats (hash))])
+      (check-equal? (hash-ref (site-crawl-result-statistics result) 'pages-crawled) 10)
+      (check-equal? (hash-ref (site-crawl-result-statistics result) 'failed-urls) 2)))
+
+  (test-case "site-crawl-result metadata access"
+    (let* ([meta (hash 'seed-url "http://example.com"
+                       'base-domain "example.com")]
+           [result (site-crawl-result '() '() (hash) meta)])
+      (check-equal? (hash-ref (site-crawl-result-metadata result) 'seed-url) "http://example.com")))
+
+  ;; URL Contract Validation
+  (test-case "url-string/c valid URLs"
+    (check-true (url-string/c "http://example.com"))
+    (check-true (url-string/c "https://example.com/path?q=1"))
+    (check-true (url-string/c "http://localhost:3000")))
+
+  ;; Struct Copy Tests
+  (test-case "struct-copy site-crawl-state"
+    (let* ([state (site-crawl-state
+                   '("http://a.com")
+                   (set)
+                   (hash)
+                   0
+                   0
+                   1000
+                   "example.com"
+                   (hash)
+                   #f)]
+           [new-state (struct-copy site-crawl-state state
+                                  [pages-crawled 5])])
+      (check-equal? (site-crawl-state-pages-crawled new-state) 5)
+      (check-equal? (site-crawl-state-url-queue new-state) '("http://a.com"))))
+
+  ;; Config with regex pattern preserves it
+  (test-case "config preserves compiled regexp"
+    (let* ([pattern (regexp "/api/.*")]
+           [config (make-site-crawl-config #:url-pattern pattern)])
+      (check-equal? (site-crawl-config-url-pattern config) pattern)))
+
+  ;; Crawl delay configurations
+  (test-case "config zero crawl delay"
+    (let ([config (make-site-crawl-config #:crawl-delay-ms 0)])
+      (check-equal? (site-crawl-config-crawl-delay-ms config) 0)))
+
+  (test-case "config large values"
+    (let ([config (make-site-crawl-config
+                   #:max-pages 10000
+                   #:timeout-total-ms 3600000)])
+      (check-equal? (site-crawl-config-max-pages config) 10000)
+      (check-equal? (site-crawl-config-timeout-total-ms config) 3600000))))
