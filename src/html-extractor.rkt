@@ -301,22 +301,88 @@
        </table>
      </body></html>")
 
+  ;; HTML Parsing Tests
+  (test-case "html->sxml parses valid HTML"
+    (let ([sxml (html->sxml "<html><body><p>test</p></body></html>")])
+      (check-true (list? sxml))
+      (check-not-equal? sxml '(*TOP*))))
+
+  (test-case "html->sxml handles empty HTML"
+    (let ([sxml (html->sxml "")])
+      (check-true (list? sxml))))
+
+  (test-case "html->sxml handles malformed HTML gracefully"
+    (let ([sxml (html->sxml "<html><body><p>unclosed")])
+      (check-true (list? sxml))))
+
+  ;; make-xpath Tests
+  (test-case "make-xpath creates valid xpath function"
+    (let ([xpath-fn (make-xpath "//p")])
+      (check-true (procedure? xpath-fn))))
+
+  (test-case "make-xpath handles invalid xpath gracefully"
+    (let ([xpath-fn (make-xpath "[[[invalid")])
+      (check-true (procedure? xpath-fn))
+      (check-equal? (xpath-fn '(*TOP*)) '())))
+
+  ;; extract-by-xpath Tests
   (test-case "extract-by-xpath returns nodes"
     (let ([results (extract-by-xpath test-html "//h2")])
       (check-equal? (length results) 2)))
 
+  (test-case "extract-by-xpath returns empty list for no matches"
+    (let ([results (extract-by-xpath test-html "//nonexistent")])
+      (check-equal? results '())))
+
+  (test-case "extract-by-xpath handles complex xpath"
+    (let ([results (extract-by-xpath test-html "//div[@class='product']/h2")])
+      (check-equal? (length results) 2)))
+
+  ;; extract-text Tests
   (test-case "extract-text gets first match"
     (let ([text (extract-text test-html "//h2[@class='name']")])
       (check-equal? text "Test Product")))
 
+  (test-case "extract-text returns #f for no matches"
+    (let ([text (extract-text test-html "//nonexistent")])
+      (check-false text)))
+
+  (test-case "extract-text normalizes whitespace"
+    (let ([text (extract-text "<p>  hello   world  </p>" "//p")])
+      (check-equal? text "hello world")))
+
+  ;; extract-text-all Tests
   (test-case "extract-text-all gets all matches"
     (let ([texts (extract-text-all test-html "//span[@class='price']")])
       (check-equal? texts '("$19.99" "$29.99"))))
 
+  (test-case "extract-text-all returns empty list for no matches"
+    (let ([texts (extract-text-all test-html "//nonexistent")])
+      (check-equal? texts '())))
+
+  ;; extract-attr Tests
   (test-case "extract-attr gets attribute"
     (let ([href (extract-attr test-html "//a" 'href)])
       (check-equal? href "/product/123")))
 
+  (test-case "extract-attr returns #f for missing attribute"
+    (let ([attr (extract-attr test-html "//div" 'nonexistent)])
+      (check-false attr)))
+
+  (test-case "extract-attr returns #f for no matching element"
+    (let ([attr (extract-attr test-html "//nonexistent" 'href)])
+      (check-false attr)))
+
+  ;; extract-attr-all Tests
+  (test-case "extract-attr-all gets all attributes"
+    (let ([hrefs (extract-attr-all test-html "//a" 'href)])
+      (check-equal? hrefs '("/product/123" "/product/456"))))
+
+  (test-case "extract-attr-all returns empty list for no matches"
+    (let ([attrs (extract-attr-all test-html "//nonexistent" 'href)])
+      (check-equal? attrs '())))
+
+  ;; extract-by-xpaths Tests
   (test-case "extract-by-xpaths returns hash"
     (let ([result (extract-by-xpaths test-html
                                      (hash 'name "//h2[@class='name']"
@@ -326,6 +392,17 @@
       (check-equal? (hash-ref result 'name) '("Test Product" "Another Product"))
       (check-equal? (hash-ref result 'price) '("$19.99" "$29.99"))))
 
+  (test-case "extract-by-xpaths single result returns string not list"
+    (let ([result (extract-by-xpaths "<title>Page Title</title>"
+                                     (hash 'title "//title"))])
+      (check-equal? (hash-ref result 'title) "Page Title")))
+
+  (test-case "extract-by-xpaths returns #f for missing fields"
+    (let ([result (extract-by-xpaths test-html
+                                     (hash 'missing "//nonexistent"))])
+      (check-false (hash-ref result 'missing))))
+
+  ;; extract-items Tests
   (test-case "extract-items returns list of hashes"
     (let ([items (extract-items test-html
                                 "//div[@class='product']"
@@ -333,9 +410,81 @@
                                       'price ".//span[@class='price']"
                                       'link ".//a/@href"))])
       (check-equal? (length items) 2)
-      (check-equal? (hash-ref (car items) 'name) "Test Product")))
+      (check-equal? (hash-ref (car items) 'name) "Test Product")
+      (check-equal? (hash-ref (car items) 'price) "$19.99")))
 
+  (test-case "extract-items returns empty list for no parent matches"
+    (let ([items (extract-items test-html
+                                "//div[@class='nonexistent']"
+                                (hash 'name ".//h2"))])
+      (check-equal? items '())))
+
+  ;; extract-table Tests
   (test-case "extract-table returns rows"
     (let ([table (extract-table test-html)])
       (check-equal? (length table) 2)
-      (check-equal? (car (car table)) "Name"))))
+      (check-equal? (car (car table)) "Name")))
+
+  (test-case "extract-table with custom xpath"
+    (let ([table (extract-table test-html "//table")])
+      (check-equal? (length table) 2)))
+
+  (test-case "extract-table returns empty for no table"
+    (let ([table (extract-table "<p>no table</p>")])
+      (check-equal? table '())))
+
+  ;; sxml->text Tests
+  (test-case "sxml->text extracts text from element"
+    (let ([text (sxml->text '(p "Hello " (b "World")))])
+      (check-equal? text "Hello World")))
+
+  (test-case "sxml->text skips script and style"
+    (let ([text (sxml->text '(div (script "var x = 1;") "visible" (style ".x{}")))])
+      (check-equal? text "visible")))
+
+  (test-case "sxml->text handles attributes"
+    (let ([text (sxml->text '(p (@ (class "test")) "content"))])
+      (check-equal? text "content")))
+
+  ;; sxml-attr Tests
+  (test-case "sxml-attr extracts attribute"
+    (let ([attr (sxml-attr '(a (@ (href "/link")) "text") 'href)])
+      (check-equal? attr "/link")))
+
+  (test-case "sxml-attr returns #f for missing attribute"
+    (let ([attr (sxml-attr '(a (@ (href "/link")) "text") 'class)])
+      (check-false attr)))
+
+  (test-case "sxml-attr handles element without attributes"
+    (let ([attr (sxml-attr '(a "text") 'href)])
+      (check-false attr)))
+
+  ;; sxml-attrs Tests
+  (test-case "sxml-attrs extracts multiple attributes"
+    (let ([attrs (sxml-attrs '(a (@ (href "/link") (class "btn")) "text")
+                             '(href class))])
+      (check-equal? (hash-ref attrs 'href) "/link")
+      (check-equal? (hash-ref attrs 'class) "btn")))
+
+  ;; string-normalize-spaces Tests
+  (test-case "string-normalize-spaces collapses whitespace"
+    (check-equal? (string-normalize-spaces "  hello   world  ") "hello world"))
+
+  (test-case "string-normalize-spaces handles tabs and newlines"
+    (check-equal? (string-normalize-spaces "hello\n\t  world") "hello world"))
+
+  (test-case "string-normalize-spaces handles empty string"
+    (check-equal? (string-normalize-spaces "") ""))
+
+  ;; Edge Cases
+  (test-case "handles HTML with special characters"
+    (let ([text (extract-text "<p>&amp; &lt; &gt;</p>" "//p")])
+      (check-true (string? text))))
+
+  (test-case "handles nested elements"
+    (let ([text (extract-text "<div><p><span>deep</span></p></div>" "//span")])
+      (check-equal? text "deep")))
+
+  (test-case "handles unicode content"
+    (let ([text (extract-text "<p>日本語テスト</p>" "//p")])
+      (check-equal? text "日本語テスト"))))

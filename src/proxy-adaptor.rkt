@@ -392,26 +392,220 @@
 ;;                             #:render-js #t
 ;;                             #:custom-headers "{\"User-Agent\": \"Custom\"}")
 
+;; ============================================================================
 ;; Unit Tests
-;; ----------
+;; ============================================================================
 
 (module+ test
   (require rackunit)
-  
-  (test-case "URL extraction from proxy URLs"
-    (define zenrows-url 
-      "https://api.zenrows.com/v1/?apikey=KEY&url=https%3A%2F%2Fexample.com")
-    (check-equal? (extract-url-from-zenrows zenrows-url) 
+
+  ;; bool->string Tests
+  (test-case "bool->string converts true"
+    (check-equal? (bool->string #t) "true"))
+
+  (test-case "bool->string converts false"
+    (check-equal? (bool->string #f) "false"))
+
+  ;; param->string Tests
+  (test-case "param->string handles boolean"
+    (let ([result (param->string 'flag #t)])
+      (check-equal? (car result) 'flag)
+      (check-equal? (cdr result) "true")))
+
+  (test-case "param->string handles number"
+    (let ([result (param->string 'count 42)])
+      (check-equal? (car result) 'count)
+      (check-equal? (cdr result) "42")))
+
+  (test-case "param->string handles string"
+    (let ([result (param->string 'name "test")])
+      (check-equal? (car result) 'name)
+      (check-equal? (cdr result) "test")))
+
+  (test-case "param->string returns #f for nil"
+    (check-false (param->string 'x (void))))
+
+  ;; build-query-string Tests
+  (test-case "build-query-string single param"
+    (let ([result (build-query-string '((key . "value")))])
+      (check-equal? result "key=value")))
+
+  (test-case "build-query-string multiple params"
+    (let ([result (build-query-string '((a . "1") (b . "2")))])
+      (check-equal? result "a=1&b=2")))
+
+  (test-case "build-query-string encodes special chars"
+    (let ([result (build-query-string '((url . "https://example.com/path?q=1")))])
+      (check-true (string-contains? result "%3A"))   ; : encoded
+      (check-true (string-contains? result "%2F")))) ; / encoded
+
+  (test-case "build-query-string handles empty list"
+    (check-equal? (build-query-string '()) ""))
+
+  ;; ZenRows Adapter Tests
+  (test-case "zenrows-proxy-adaptor basic URL"
+    (let ([result (zenrows-proxy-adaptor "https://example.com" #:apikey "test-key")])
+      (check-true (string-contains? result "api.zenrows.com"))
+      (check-true (string-contains? result "apikey=test-key"))
+      (check-true (string-contains? result "url="))))
+
+  (test-case "zenrows-proxy-adaptor with js_render"
+    (let ([result (zenrows-proxy-adaptor "https://example.com"
+                                          #:apikey "key"
+                                          #:js_render #t)])
+      (check-true (string-contains? result "js_render=true"))))
+
+  (test-case "zenrows-proxy-adaptor with premium_proxy"
+    (let ([result (zenrows-proxy-adaptor "https://example.com"
+                                          #:apikey "key"
+                                          #:premium_proxy #t
+                                          #:proxy_country "us")])
+      (check-true (string-contains? result "premium_proxy=true"))
+      (check-true (string-contains? result "proxy_country=us"))))
+
+  (test-case "zenrows-proxy-adaptor with wait"
+    (let ([result (zenrows-proxy-adaptor "https://example.com"
+                                          #:apikey "key"
+                                          #:wait 5000)])
+      (check-true (string-contains? result "wait=5000"))))
+
+  (test-case "zenrows-proxy-adaptor with device"
+    (let ([result (zenrows-proxy-adaptor "https://example.com"
+                                          #:apikey "key"
+                                          #:device "mobile")])
+      (check-true (string-contains? result "device=mobile"))))
+
+  ;; Scrape.do Adapter Tests
+  (test-case "scrape-do-proxy-adaptor basic URL"
+    (let ([result (scrape-do-proxy-adaptor "https://example.com" #:token "test-token")])
+      (check-true (string-contains? result "api.scrape.do"))
+      (check-true (string-contains? result "token=test-token"))
+      (check-true (string-contains? result "url="))))
+
+  (test-case "scrape-do-proxy-adaptor with render"
+    (let ([result (scrape-do-proxy-adaptor "https://example.com"
+                                            #:token "token"
+                                            #:render #t)])
+      (check-true (string-contains? result "render=true"))))
+
+  (test-case "scrape-do-proxy-adaptor with geoCode"
+    (let ([result (scrape-do-proxy-adaptor "https://example.com"
+                                            #:token "token"
+                                            #:geoCode "uk")])
+      (check-true (string-contains? result "geoCode=uk"))))
+
+  (test-case "scrape-do-proxy-adaptor with timeout"
+    (let ([result (scrape-do-proxy-adaptor "https://example.com"
+                                            #:token "token"
+                                            #:timeout 30000)])
+      (check-true (string-contains? result "timeout=30000"))))
+
+  (test-case "scrape-do-proxy-adaptor with super proxy"
+    (let ([result (scrape-do-proxy-adaptor "https://example.com"
+                                            #:token "token"
+                                            #:super #t)])
+      (check-true (string-contains? result "super=true"))))
+
+  ;; ScrapingFish Adapter Tests
+  (test-case "scraping-fish-proxy-adaptor basic URL"
+    (let ([result (scraping-fish-proxy-adaptor "https://example.com"
+                                                #:api-key "test-key")])
+      (check-true (string-contains? result "scraping.narf.ai"))
+      (check-true (string-contains? result "api_key=test-key"))
+      (check-true (string-contains? result "url="))))
+
+  (test-case "scraping-fish-proxy-adaptor render_js default true"
+    (let ([result (scraping-fish-proxy-adaptor "https://example.com"
+                                                #:api-key "key")])
+      (check-true (string-contains? result "render_js=true"))))
+
+  (test-case "scraping-fish-proxy-adaptor render_js false"
+    (let ([result (scraping-fish-proxy-adaptor "https://example.com"
+                                                #:api-key "key"
+                                                #:render-js #f)])
+      (check-true (string-contains? result "render_js=false"))))
+
+  (test-case "scraping-fish-proxy-adaptor with custom-headers"
+    (let ([result (scraping-fish-proxy-adaptor "https://example.com"
+                                                #:api-key "key"
+                                                #:custom-headers "{\"User-Agent\": \"Custom\"}")])
+      (check-true (string-contains? result "custom_headers="))))
+
+  ;; URL Extraction Tests
+  (test-case "extract-url-from-zenrows extracts URL"
+    (define zenrows-url
+      "https://api.zenrows.com/v1/?apikey=KEY&url=https%3A%2F%2Fexample.com%2Fpath")
+    (check-equal? (extract-url-from-zenrows zenrows-url)
+                  "https://example.com/path"))
+
+  (test-case "extract-url-from-zenrows handles invalid URL"
+    (check-equal? (extract-url-from-zenrows "not-a-url") "not-a-url"))
+
+  (test-case "extract-url-from-zenrows returns original if no url param"
+    (check-equal? (extract-url-from-zenrows "https://api.zenrows.com/v1/?apikey=KEY")
+                  "https://api.zenrows.com/v1/?apikey=KEY"))
+
+  (test-case "extract-url-from-scrape-do extracts URL"
+    (define scrape-do-url
+      "https://api.scrape.do?token=TOKEN&url=https%3A%2F%2Fexample.com")
+    (check-equal? (extract-url-from-scrape-do scrape-do-url)
                   "https://example.com"))
-  
-  (test-case "Proxy service identification"
-    (check-eq? (get-proxy-service "https://api.zenrows.com/v1/?url=test") 
-               'zenrows)
-    (check-eq? (get-proxy-service "https://api.scrape.do?url=test") 
-               'scrape-do)
-    (check-eq? (get-proxy-service "https://example.com") 
-               #f))
-  
-  (test-case "Boolean to string conversion"
-    (check-equal? (bool->string #t) "true")
-    (check-equal? (bool->string #f) "false")))
+
+  (test-case "extract-url-from-scraping-fish extracts URL"
+    (define sf-url
+      "https://scraping.narf.ai/api/v1/?api_key=KEY&url=https%3A%2F%2Fexample.com")
+    (check-equal? (extract-url-from-scraping-fish sf-url)
+                  "https://example.com"))
+
+  (test-case "extract-url-from-proxy works with all services"
+    (check-equal? (extract-url-from-proxy
+                   "https://api.zenrows.com/v1/?apikey=KEY&url=https%3A%2F%2Fexample.com")
+                  "https://example.com")
+    (check-equal? (extract-url-from-proxy
+                   "https://api.scrape.do?token=KEY&url=https%3A%2F%2Fexample.com")
+                  "https://example.com")
+    (check-equal? (extract-url-from-proxy "https://example.com")
+                  "https://example.com"))
+
+  ;; Proxy Service Identification Tests
+  (test-case "get-proxy-service identifies zenrows"
+    (check-eq? (get-proxy-service "https://api.zenrows.com/v1/?url=test")
+               'zenrows))
+
+  (test-case "get-proxy-service identifies scrape-do"
+    (check-eq? (get-proxy-service "https://api.scrape.do?url=test")
+               'scrape-do))
+
+  (test-case "get-proxy-service identifies scraping-fish"
+    (check-eq? (get-proxy-service "https://scraping.narf.ai/api/v1/?url=test")
+               'scraping-fish))
+
+  (test-case "get-proxy-service returns #f for non-proxy"
+    (check-false (get-proxy-service "https://example.com"))
+    (check-false (get-proxy-service "https://google.com/search?q=test")))
+
+  ;; is-proxied-url? Tests
+  (test-case "is-proxied-url? returns true for proxy URLs"
+    (check-true (is-proxied-url? "https://api.zenrows.com/v1/?url=test"))
+    (check-true (is-proxied-url? "https://api.scrape.do?url=test"))
+    (check-true (is-proxied-url? "https://scraping.narf.ai/api/v1/?url=test")))
+
+  (test-case "is-proxied-url? returns false for regular URLs"
+    (check-false (is-proxied-url? "https://example.com"))
+    (check-false (is-proxied-url? "http://localhost:3000"))
+    (check-false (is-proxied-url? "https://api.example.com/data")))
+
+  ;; Edge Cases
+  (test-case "handles URL with special characters"
+    (let ([result (zenrows-proxy-adaptor "https://example.com/path?q=test&foo=bar"
+                                          #:apikey "key")])
+      (check-true (string? result))
+      (check-true (string-contains? result "url="))))
+
+  (test-case "handles empty URL"
+    (let ([result (zenrows-proxy-adaptor "" #:apikey "key")])
+      (check-true (string? result))))
+
+  (test-case "handles unicode URL"
+    (let ([result (zenrows-proxy-adaptor "https://example.com/日本語" #:apikey "key")])
+      (check-true (string? result)))))

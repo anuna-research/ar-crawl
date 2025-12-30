@@ -292,6 +292,221 @@
   (if (or (string-contains? field ",")
           (string-contains? field "\"")
           (string-contains? field "\n"))
-      (format "\"~a\"" 
+      (format "\"~a\""
               (string-replace field "\"" "\"\""))
       field))
+
+;; ============================================================================
+;; Unit Tests
+;; ============================================================================
+
+(module+ test
+  (require rackunit
+           racket/file
+           racket/runtime-path)
+
+  ;; Test data
+  (define test-data
+    (list (hash 'name "Product A" 'price 19.99 'active #t)
+          (hash 'name "Product B" 'price 29.99 'active #f)))
+
+  (define test-data-with-extras
+    (list (hash 'name "Item" 'price 10 'category "Books")
+          (hash 'name "Other" 'price 20 'tags "a,b,c")))
+
+  ;; Helper to create temp files
+  (define (with-temp-file ext proc)
+    (let ([path (make-temporary-file (format "test-~~a.~a" ext))])
+      (dynamic-wind
+        void
+        (lambda () (proc path))
+        (lambda () (when (file-exists? path) (delete-file path))))))
+
+  ;; escape-csv-field Tests
+  (test-case "escape-csv-field simple string"
+    (check-equal? (escape-csv-field "hello") "hello"))
+
+  (test-case "escape-csv-field with comma"
+    (check-equal? (escape-csv-field "hello, world") "\"hello, world\""))
+
+  (test-case "escape-csv-field with quote"
+    (check-equal? (escape-csv-field "say \"hello\"") "\"say \"\"hello\"\"\""))
+
+  (test-case "escape-csv-field with newline"
+    (check-equal? (escape-csv-field "line1\nline2") "\"line1\nline2\""))
+
+  (test-case "escape-csv-field empty string"
+    (check-equal? (escape-csv-field "") ""))
+
+  ;; extract-headers Tests
+  (test-case "extract-headers gets all keys"
+    (let ([headers (extract-headers test-data)])
+      (check-true (list? headers))
+      (check-equal? (length headers) 3)
+      (check-true (member 'name headers))
+      (check-true (member 'price headers))
+      (check-true (member 'active headers))))
+
+  (test-case "extract-headers handles different keys"
+    (let ([headers (extract-headers test-data-with-extras)])
+      (check-true (member 'category headers))
+      (check-true (member 'tags headers))))
+
+  (test-case "extract-headers returns sorted list"
+    (let ([headers (extract-headers test-data)])
+      (check-equal? headers (sort headers symbol<?))))
+
+  ;; hash->row Tests
+  (test-case "hash->row converts values correctly"
+    (let* ([headers '(active name price)]
+           [row (hash->row (car test-data) headers)])
+      (check-equal? (length row) 3)
+      (check-equal? (list-ref row 0) "true")
+      (check-equal? (list-ref row 1) "Product A")
+      (check-equal? (list-ref row 2) "19.99")))
+
+  (test-case "hash->row handles missing keys"
+    (let* ([headers '(name nonexistent)]
+           [row (hash->row (hash 'name "test") headers)])
+      (check-equal? (list-ref row 0) "test")
+      (check-equal? (list-ref row 1) "")))
+
+  (test-case "hash->row handles boolean values"
+    (let ([row (hash->row (hash 'flag #t) '(flag))])
+      (check-equal? (car row) "true"))
+    (let ([row (hash->row (hash 'flag #f) '(flag))])
+      (check-equal? (car row) "false")))
+
+  ;; format-data Tests (JSON)
+  (test-case "format-data writes JSON"
+    (with-temp-file "json"
+      (lambda (path)
+        (check-true (format-data test-data 'json path))
+        (check-true (file-exists? path))
+        (let ([content (file->string path)])
+          (check-true (string-contains? content "Product A"))
+          (check-true (string-contains? content "19.99"))))))
+
+  (test-case "format-data writes empty JSON"
+    (with-temp-file "json"
+      (lambda (path)
+        (check-true (format-data '() 'json path))
+        (let ([content (file->string path)])
+          (check-equal? (string-trim content) "[]")))))
+
+  ;; format-data Tests (CSV)
+  (test-case "format-data writes CSV"
+    (with-temp-file "csv"
+      (lambda (path)
+        (check-true (format-data test-data 'csv path))
+        (check-true (file-exists? path))
+        (let ([content (file->string path)])
+          (check-true (string-contains? content "name"))
+          (check-true (string-contains? content "Product A"))))))
+
+  (test-case "format-data writes empty CSV"
+    (with-temp-file "csv"
+      (lambda (path)
+        (check-true (format-data '() 'csv path))
+        (check-true (file-exists? path)))))
+
+  ;; format-data Tests (NDJSON)
+  (test-case "format-data writes NDJSON"
+    (with-temp-file "ndjson"
+      (lambda (path)
+        (check-true (format-data test-data 'ndjson path))
+        (check-true (file-exists? path))
+        (let* ([content (file->string path)]
+               [lines (string-split content "\n")])
+          ;; Should have one JSON object per line
+          (check-true (>= (length lines) 2))))))
+
+  ;; Streaming Formatter Tests
+  (test-case "create-streaming-formatter json"
+    (with-temp-file "json"
+      (lambda (path)
+        (let ([fmt (create-streaming-formatter 'json path)])
+          (check-true (formatter? fmt))
+          (check-equal? (formatter-type fmt) 'json)
+          (close-formatter fmt)))))
+
+  (test-case "create-streaming-formatter ndjson"
+    (with-temp-file "ndjson"
+      (lambda (path)
+        (let ([fmt (create-streaming-formatter 'ndjson path)])
+          (check-true (formatter? fmt))
+          (check-equal? (formatter-type fmt) 'ndjson)
+          (close-formatter fmt)))))
+
+  (test-case "write-item with formatter"
+    (with-temp-file "ndjson"
+      (lambda (path)
+        (let ([fmt (create-streaming-formatter 'ndjson path)])
+          (write-item fmt (hash 'name "test"))
+          (write-item fmt (hash 'name "test2"))
+          (close-formatter fmt))
+        (let* ([content (file->string path)]
+               [lines (filter (lambda (s) (> (string-length s) 0))
+                             (string-split content "\n"))])
+          (check-equal? (length lines) 2)))))
+
+  ;; JSON streaming formatter Tests
+  (test-case "streaming json produces valid json array"
+    (with-temp-file "json"
+      (lambda (path)
+        (let ([fmt (create-streaming-formatter 'json path)])
+          (write-item fmt (hash 'a 1))
+          (write-item fmt (hash 'b 2))
+          (close-formatter fmt))
+        (let ([content (file->string path)])
+          (check-true (string-prefix? (string-trim content) "["))
+          (check-true (string-suffix? (string-trim content) "]"))))))
+
+  ;; CSV streaming formatter Tests
+  (test-case "streaming csv writes header and rows"
+    (with-temp-file "csv"
+      (lambda (path)
+        (let ([fmt (create-streaming-formatter 'csv path)])
+          (write-item fmt (hash 'name "test" 'value 1))
+          (write-item fmt (hash 'name "test2" 'value 2))
+          (close-formatter fmt))
+        (let* ([content (file->string path)]
+               [lines (filter (lambda (s) (> (string-length s) 0))
+                             (string-split content "\n"))])
+          ;; Should have header + 2 data rows
+          (check-true (>= (length lines) 2))))))
+
+  ;; Directory Creation Tests
+  (test-case "format-data creates output directory"
+    (let ([dir (make-temporary-file "testdir-~a" 'directory)])
+      (dynamic-wind
+        void
+        (lambda ()
+          (let ([path (build-path dir "subdir" "output.json")])
+            (check-true (format-data test-data 'json path))
+            (check-true (file-exists? path))))
+        (lambda ()
+          (delete-directory/files dir)))))
+
+  ;; Edge Cases
+  (test-case "format-data handles special characters in strings"
+    (with-temp-file "json"
+      (lambda (path)
+        (let ([data (list (hash 'text "line1\nline2\ttab"))])
+          (check-true (format-data data 'json path))))))
+
+  (test-case "format-data handles unicode"
+    (with-temp-file "json"
+      (lambda (path)
+        (let ([data (list (hash 'text "日本語テスト"))])
+          (check-true (format-data data 'json path))
+          (let ([content (file->string path)])
+            (check-true (string-contains? content "日本語テスト")))))))
+
+  (test-case "hash->row handles various types"
+    (let* ([item (hash 'str "text" 'num 42 'bool #t 'list '(1 2 3))]
+           [row (hash->row item '(str num bool list))])
+      (check-equal? (list-ref row 0) "text")
+      (check-equal? (list-ref row 1) "42")
+      (check-equal? (list-ref row 2) "true")
+      (check-true (string? (list-ref row 3))))))
