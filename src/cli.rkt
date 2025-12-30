@@ -585,6 +585,45 @@
               (hash-ref stats 'count 0)
               (quotient (hash-ref stats 'totalSize 0) 1024))))
 
+  ;; Detect dynamic content
+  (define js-time (hash-ref timing 'jsExecutionEstimate 0))
+  (define network-requests (hash-ref response 'networkRequests (hash)))
+  (define network-by-type (hash-ref network-requests 'byType (hash)))
+  (define xhr-count (hash-ref network-by-type 'xmlhttprequest 0))
+  (define fetch-count (hash-ref network-by-type 'fetch 0))
+  (define script-stats (hash-ref (hash-ref resources 'byType (hash)) 'script (hash)))
+  (define script-requests (if (hash? script-stats) (hash-ref script-stats 'count 0) 0))
+  (define network-idle-delay (- (hash-ref timing 'networkIdleTime 0)
+                                (hash-ref timing 'loadComplete 0)))
+
+  ;; Dynamic content score (0-100)
+  (define dynamic-score
+    (min 100
+         (+ (if (> js-time 500) 30 (if (> js-time 100) 15 0))
+            (if (> (+ xhr-count fetch-count) 0) 30 0)
+            (if (> script-requests 20) 25 (if (> script-requests 5) 10 0))
+            (if (> network-idle-delay 1000) 15 (if (> network-idle-delay 500) 5 0)))))
+
+  (printf "~n=== Content Analysis ===~n~n")
+  (cond
+    [(< dynamic-score 20)
+     (printf "  Content Type: Static~n")
+     (printf "  The page has minimal JavaScript. Direct HTTP should work fine.~n")
+     (printf "  Recommendation: Use -s direct for faster crawling~n")]
+    [(< dynamic-score 50)
+     (printf "  Content Type: Light JavaScript~n")
+     (printf "  The page has some JavaScript but may work with direct HTTP.~n")
+     (printf "  Recommendation: Try -s direct first, use -s playwright if content missing~n")]
+    [else
+     (printf "  Content Type: Dynamic/SPA~n")
+     (printf "  The page relies heavily on JavaScript for content.~n")
+     (printf "  Recommendation: Use -s playwright for full content~n")])
+
+  (when verbose
+    (printf "~n  Dynamic Score: ~a/100~n" dynamic-score)
+    (printf "  Factors: JS=~ams, XHR/Fetch=~a, Scripts=~a, NetworkDelay=~ams~n"
+            js-time (+ xhr-count fetch-count) script-requests network-idle-delay))
+
   (printf "~n=== Recommended Scraping Parameters ===~n~n")
   (printf "  --pw-delay ~a        # Wait for JS to complete~n"
           (hash-ref recommendations 'pwDelay 5000))
