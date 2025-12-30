@@ -11,7 +11,10 @@
 (require racket/cmdline
          racket/file
          racket/pretty
+         racket/system
+         racket/port
          json
+         net/url
          "production-crawler.rkt"
          "config-manager.rkt"
          "crawl-service-adaptor.rkt"
@@ -24,30 +27,160 @@
 (define current-crawler #f)
 (define global-config #f)
 
+;; Playwright Service Management
+;; -----------------------------
+
+(define playwright-process #f)
+(define playwright-stdout #f)
+(define playwright-stderr #f)
+(define PLAYWRIGHT_SERVICE_PORT (or (getenv "PLAYWRIGHT_SERVICE_PORT") "3033"))
+
+;; @function{get-playwright-service-dir}
+;; @description{Get the playwright-service directory path}
+(define (get-playwright-service-dir)
+  (define script-dir (path-only (path->complete-path (find-system-path 'run-file))))
+  (simplify-path (build-path script-dir ".." "playwright-service")))
+
+;; @function{playwright-service-installed?}
+;; @description{Check if playwright service dependencies are installed}
+(define (playwright-service-installed?)
+  (define service-dir (get-playwright-service-dir))
+  (and (directory-exists? service-dir)
+       (file-exists? (build-path service-dir "node_modules" ".package-lock.json"))))
+
+;; @function{install-playwright-service}
+;; @description{Install playwright service dependencies}
+(define (install-playwright-service)
+  (define service-dir (get-playwright-service-dir))
+  (printf "Installing Playwright service dependencies...~n")
+  (parameterize ([current-directory service-dir])
+    (define success (system "npm install"))
+    (unless success
+      (error "Failed to install Playwright dependencies. Please run 'npm install' in playwright-service/ directory."))))
+
+;; @function{playwright-service-running?}
+;; @description{Check if playwright service is already running}
+(define (playwright-service-running?)
+  (with-handlers ([exn:fail? (lambda (e) #f)])
+    (define health-url (format "http://localhost:~a/health" PLAYWRIGHT_SERVICE_PORT))
+    (define port (get-pure-port (string->url health-url)))
+    (define response (port->string port))
+    (close-input-port port)
+    (and response (string-contains? response "ok"))))
+
+;; @function{start-playwright-service}
+;; @description{Start the playwright service subprocess}
+(define (start-playwright-service #:verbose [verbose #f])
+  (cond
+    ;; Already running externally
+    [(playwright-service-running?)
+     (when verbose
+       (printf "Playwright service already running on port ~a~n" PLAYWRIGHT_SERVICE_PORT))
+     #t]
+
+    ;; Already started by us
+    [playwright-process
+     (when verbose
+       (printf "Playwright service process already started~n"))
+     #t]
+
+    [else
+     ;; Check if dependencies installed
+     (unless (playwright-service-installed?)
+       (install-playwright-service))
+
+     (define service-dir (get-playwright-service-dir))
+     (define server-js (build-path service-dir "server.js"))
+
+     (unless (file-exists? server-js)
+       (error "Playwright service not found. Expected at: ~a" server-js))
+
+     (when verbose
+       (printf "Starting Playwright service on port ~a...~n" PLAYWRIGHT_SERVICE_PORT))
+
+     ;; Start the node process
+     (define-values (proc stdout stdin stderr)
+       (subprocess #f #f #f
+                   (find-executable-path "node")
+                   (path->string server-js)))
+
+     (set! playwright-process proc)
+     (set! playwright-stdout stdout)
+     (set! playwright-stderr stderr)
+     (close-output-port stdin)
+
+     ;; Wait for service to be ready (up to 10 seconds)
+     (define (wait-for-ready attempts)
+       (cond
+         [(= attempts 0)
+          (stop-playwright-service)
+          (error "Playwright service failed to start within timeout")]
+         [(playwright-service-running?)
+          (when verbose
+            (printf "Playwright service ready~n"))
+          #t]
+         [else
+          (sleep 0.5)
+          (wait-for-ready (sub1 attempts))]))
+
+     (wait-for-ready 20)]))
+
+;; @function{stop-playwright-service}
+;; @description{Stop the playwright service subprocess}
+(define (stop-playwright-service)
+  (when playwright-process
+    (subprocess-kill playwright-process #t)
+    (when playwright-stdout (close-input-port playwright-stdout))
+    (when playwright-stderr (close-input-port playwright-stderr))
+    (set! playwright-process #f)
+    (set! playwright-stdout #f)
+    (set! playwright-stderr #f)))
+
+;; @function{ensure-playwright-if-needed}
+;; @description{Start playwright service if it's in the services list}
+(define (ensure-playwright-if-needed services #:verbose [verbose #f])
+  (when (member 'playwright services)
+    (start-playwright-service #:verbose verbose)))
+
+;; @function{with-playwright-cleanup}
+;; @description{Run a thunk and ensure playwright is cleaned up}
+(define-syntax-rule (with-playwright-cleanup body ...)
+  (dynamic-wind
+    void
+    (lambda () body ...)
+    stop-playwright-service))
+
 ;; CLI Commands
 ;; ------------
 
 ;; @function{cmd-crawl}
 ;; @description{Crawl a single URL}
-(define (cmd-crawl url 
+(define (cmd-crawl url
                   #:config [config-file #f]
                   #:output [output-file #f]
                   #:format [format 'json]
                   #:services [services '()]
                   #:verbose [verbose #f]
-                  #:wait [wait #f])
-  
+                  #:wait [wait #f]
+                  #:xpath [xpath #f])
+
   (setup-crawler config-file verbose)
-  
+
   ;; Override services if specified
   (when (not (empty? services))
-    (set! global-config 
+    (set! global-config
           (hash-set global-config 'crawler
                    (hash-set (hash-ref global-config 'crawler)
                             'services services))))
-  
+
+  ;; Start playwright service if needed
+  (define config-services (get-config-value global-config '(crawler services) '("direct")))
+  (define effective-services
+    (map (lambda (s) (if (symbol? s) s (string->symbol s))) config-services))
+  (ensure-playwright-if-needed effective-services #:verbose verbose)
+
   (define crawler (create-crawler-from-config))
-  
+
   (printf "Crawling URL: ~a~n" url)
   (when verbose
     (printf "Using services: ~a~n" 
@@ -68,14 +201,18 @@
   (define results (get-job-results crawler job-id))
   
   (if results
-      (begin
-        (printf "Crawl completed successfully~n")
-        (output-results results output-file format verbose))
+      (let* ([_ (printf "Crawl completed successfully~n")]
+             ;; Apply XPath filter if specified
+             [filtered-results
+              (if xpath
+                  (apply-xpath-filter-to-job-results results xpath)
+                  results)])
+        (output-results filtered-results output-file format verbose))
       (printf "Crawl failed~n")))
 
 ;; @function{cmd-crawl-site}
 ;; @description{Crawl an entire site with link following}
-(define (cmd-crawl-site url 
+(define (cmd-crawl-site url
                        #:config [config-file #f]
                        #:output [output-file #f]
                        #:format [format 'json]
@@ -85,19 +222,26 @@
                        #:max-depth [max-depth 3]
                        #:url-pattern [url-pattern ".*"]
                        #:same-domain [same-domain #t]
-                       #:crawl-delay [crawl-delay 1000])
-  
+                       #:crawl-delay [crawl-delay 1000]
+                       #:xpath [xpath #f])
+
   (setup-crawler config-file verbose)
-  
+
   ;; Override services if specified
   (when (not (empty? services))
-    (set! global-config 
+    (set! global-config
           (hash-set global-config 'crawler
                    (hash-set (hash-ref global-config 'crawler)
                             'services services))))
-  
+
+  ;; Start playwright service if needed
+  (define config-services (get-config-value global-config '(crawler services) '("direct")))
+  (define effective-services
+    (map (lambda (s) (if (symbol? s) s (string->symbol s))) config-services))
+  (ensure-playwright-if-needed effective-services #:verbose verbose)
+
   (define crawler (create-crawler-from-config))
-  
+
   ;; Create site crawl configuration
   (define site-config 
     (make-site-crawl-config
@@ -130,9 +274,16 @@
   (define successful-pages (site-crawl-result-pages result))
   (define failed-urls (site-crawl-result-failed-urls result))
   
+  ;; Apply XPath filter if specified
+  (define filtered-pages
+    (if xpath
+        (map (lambda (page) (apply-xpath-to-response page xpath))
+             successful-pages)
+        successful-pages))
+  
 
   
-  (if (empty? successful-pages)
+  (if (empty? filtered-pages)
       (printf "Site crawl failed - no pages crawled successfully~n")
       (begin
         (printf "Site crawl completed successfully~n")
@@ -142,7 +293,7 @@
         ;; Save results if output file specified
         (when output-file
           (define site-results
-            (hash 'pages successful-pages
+            (hash 'pages filtered-pages
                   'failed-urls failed-urls
                   'statistics (site-crawl-result-statistics result)
                   'metadata (hash 'seed-url (hash-ref (site-crawl-result-metadata result) 'seed-url)
@@ -364,9 +515,10 @@
 ;; @function{create-crawler-from-config}
 ;; @description{Create crawler from global config}
 (define (create-crawler-from-config)
-  (create-production-crawler 
+  (define config-services (get-config-value global-config '(crawler services) '("direct")))
+  (create-production-crawler
    (make-production-crawler-config
-    #:services (map string->symbol (get-config-value global-config '(crawler services) '("direct")))
+    #:services (map (lambda (s) (if (symbol? s) s (string->symbol s))) config-services)
     #:fallback-enabled (get-config-value global-config '(crawler fallback_enabled) #t)
     #:max-concurrent-jobs (get-config-value global-config '(crawler max_concurrent_jobs) 10)
     #:rate-limit-ms (get-config-value global-config '(crawler rate_limit_ms) 1000)
@@ -451,6 +603,18 @@
        "No data extracted.\n"
        "Data extracted successfully.\n")))
 
+;; @function{apply-xpath-filter-to-job-results}
+;; @description{Apply XPath filter to job results}
+(define (apply-xpath-filter-to-job-results results xpath)
+  (define filtered-data
+    (map (lambda (item)
+           (apply-xpath-to-response item xpath))
+         (job-results-data results)))
+  
+  (job-results filtered-data
+               (job-results-metadata results)
+               (job-results-errors results)))
+
 ;; Main CLI Parser
 ;; ---------------
 
@@ -476,10 +640,12 @@
     (output-file-param file)]
    [("-f" "--format") fmt "Output format: json, csv, markdown, sqlite (default: json)"
    (output-format-param (string->symbol fmt))]
+    [("--xpath") xpath "XPath expression to filter HTML content"
+    (xpath-filter-param xpath)]
    
    #:multi
    [("-s" "--service") service "Service to use (can be repeated)"
-    (selected-services (cons (string->symbol service) selected-services))]
+    (selected-services (cons (string->symbol service) (selected-services)))]
    
    #:args args
    
@@ -510,23 +676,25 @@
         #:services (selected-services)
         #:verbose (verbose-mode)
                     #:output (output-file-param)
-                    #:format (output-format-param))]
+                    #:format (output-format-param)
+                    #:xpath (xpath-filter-param))]
         
         [(crawl-site)
          (when (empty? command-args)
            (error "URL required for crawl-site command"))
 
          (cmd-crawl-site (car command-args)
-                        #:config (config-file-path)
-                        #:services (selected-services)
-                        #:verbose (verbose-mode)
-                        #:max-pages (max-pages)
-                        #:max-depth (max-depth)
-                        #:url-pattern (url-pattern)
-                        #:same-domain (same-domain-only)
-                        #:crawl-delay (crawl-delay-ms)
-                        #:output (output-file-param)
-                        #:format (output-format-param))]
+         #:config (config-file-path)
+         #:services (selected-services)
+         #:verbose (verbose-mode)
+         #:max-pages (max-pages)
+         #:max-depth (max-depth)
+         #:url-pattern (url-pattern)
+         #:same-domain (same-domain-only)
+         #:crawl-delay (crawl-delay-ms)
+         #:output (output-file-param)
+         #:format (output-format-param)
+                         #:xpath (xpath-filter-param))]
         
         [(health)
          (cmd-health #:config (config-file-path)
@@ -563,7 +731,12 @@
 (define crawl-delay-ms (make-parameter 1000))
 (define output-file-param (make-parameter #f))
 (define output-format-param (make-parameter 'json))
+(define xpath-filter-param (make-parameter #f))
 
 ;; Run main if this file is executed directly
 (module+ main
+  ;; Register cleanup handler for playwright service
+  (plumber-add-flush! (current-plumber)
+                      (lambda (handle)
+                        (stop-playwright-service)))
   (main))

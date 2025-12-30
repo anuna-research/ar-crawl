@@ -6,6 +6,7 @@ A robust, production-ready web crawler with service fallbacks and **comprehensiv
 
 - **🆓 No API Keys Required**: Built-in direct HTTP service works immediately
 - **🕷️ Site-Wide Crawling**: Intelligent link discovery and following with regex filtering
+- **🎭 Local Playwright Integration**: Built-in browser rendering for JavaScript-heavy sites (auto-spawns)
 - **Multi-Service Support**: Integrates with FireCrawl, ScrapingBee, Browserless, and ScraperAPI
 - **Automatic Fallbacks**: Seamless failover between services when one fails
 - **URL Filtering**: Advanced regex-based URL pattern matching and domain restrictions
@@ -23,8 +24,9 @@ A robust, production-ready web crawler with service fallbacks and **comprehensiv
 ### Prerequisites
 
 - [Racket](https://racket-lang.org/) 8.0 or higher
+- [Node.js](https://nodejs.org/) 18+ (optional, for Playwright browser rendering)
 - Docker (optional, for containerized deployment)
-- API keys for desired crawling services
+- API keys for desired crawling services (optional - direct and Playwright work without keys)
 
 ### Installation
 
@@ -65,6 +67,15 @@ make run ARGS='health --config config/direct-only.json'
 
 # Run the direct crawling demo
 racket examples/direct-crawl-demo.rkt
+```
+
+**🎭 Crawl JavaScript-heavy sites with Playwright:**
+```bash
+# Playwright auto-starts when needed (first run installs dependencies)
+ar-crawl -s playwright crawl https://spa-example.com
+
+# Site crawl with browser rendering
+ar-crawl -s playwright -v crawl-site https://react-app.com --max-pages 20
 ```
 
 **Crawl a single URL:**
@@ -513,7 +524,7 @@ AR-Crawl uses JSON configuration files located in the `config/` directory:
 ```json
 {
   "crawler": {
-    "services": ["firecrawl", "scrapingbee", "browserless"],
+    "services": ["playwright", "firecrawl", "scrapingbee", "browserless"],
     "fallback_enabled": true,
     "max_concurrent_jobs": 50,
     "rate_limit_ms": 1000,
@@ -607,6 +618,26 @@ The `docker-compose.yml` includes:
 
 ## Supported Services
 
+### Playwright (Local Browser - Recommended for SPAs)
+- **Features**: Full JavaScript rendering, auto-spawning service, no API keys needed
+- **Best for**: Single-page applications (SPAs), JavaScript-heavy sites, dynamic content
+- **Setup**: Requires Node.js 18+. Dependencies auto-install on first use.
+
+```bash
+# Use Playwright for JS-heavy sites (service auto-starts)
+ar-crawl -s playwright crawl https://spa-example.com
+
+# Verbose mode shows service startup
+ar-crawl -s playwright -v crawl https://example.com
+
+# Fallback: try Playwright first, then direct HTTP
+ar-crawl -s playwright -s direct crawl https://example.com
+```
+
+**Environment Variables:**
+- `PLAYWRIGHT_SERVICE_PORT` - Custom port (default: `3033`)
+- `PLAYWRIGHT_SERVICE_URL` - Full service URL override
+
 ### FireCrawl
 - **Features**: Markdown extraction, HTML cleaning, link extraction
 - **Best for**: Content extraction, article parsing
@@ -686,13 +717,16 @@ ar-crawl/
 │   ├── cli.rkt                    # CLI interface with site crawling
 │   ├── production-crawler.rkt     # Main crawler engine
 │   ├── site-crawler.rkt           # Site-wide crawling with link following
-│   ├── crawl-service-adaptor.rkt  # Service adapters
+│   ├── crawl-service-adaptor.rkt  # Service adapters (incl. Playwright)
 │   ├── config-manager.rkt         # Configuration management
 │   ├── scraper-interfaces.rkt     # Data structures and contracts
 │   ├── data-formatter.rkt         # Output formatting (JSON, CSV, SQLite)
 │   ├── sqlite-formatter.rkt       # SQLite database output
 │   ├── proxy-adaptor.rkt          # Legacy proxy adapters
 │   └── utils.rkt                  # Utility functions
+├── playwright-service/            # Local Playwright browser service
+│   ├── package.json               # Node.js dependencies
+│   └── server.js                  # HTTP server wrapping Playwright
 ├── config/
 │   ├── default.json              # Default configuration
 │   ├── direct-only.json          # Direct service only (no API keys)
