@@ -179,9 +179,9 @@
 ;; @param[target]{string?} Target string
 ;; @returns{(or/c string? #f)} Substring or #f if not found
 (define (substring-after-target str target)
-  (let ([index (string-contains? str target)])
-    (and index
-         (substring str (+ index (string-length target))))))
+  (let ([positions (regexp-match-positions (regexp-quote target) str)])
+    (and positions
+         (substring str (cdr (car positions))))))
 
 ;; JSON Utilities
 ;; --------------
@@ -192,7 +192,8 @@
 ;; @returns{(or/c jsexpr? #f)} Parsed JSON or #f on error
 (define (safe-string->jsexpr json-str)
   (with-handlers ([exn:fail? (lambda (e) #f)])
-    (string->jsexpr json-str)))
+    (define result (string->jsexpr json-str))
+    (if (eof-object? result) #f result)))
 
 ;; @function{pretty-print-json}
 ;; @description{Pretty print JSON expression}
@@ -234,11 +235,11 @@
 ;; @param[str]{string?} String to escape
 ;; @returns{string?} Escaped string
 (define (escape-html str)
-  (let* ([str (regexp-replace* #rx"&" str "&amp;")]
-         [str (regexp-replace* #rx"<" str "&lt;")]
-         [str (regexp-replace* #rx">" str "&gt;")]
-         [str (regexp-replace* #rx"\"" str "&quot;")]
-         [str (regexp-replace* #rx"'" str "&#39;")])
+  (let* ([str (regexp-replace* #rx"&" str "\\&amp;")]
+         [str (regexp-replace* #rx"<" str "\\&lt;")]
+         [str (regexp-replace* #rx">" str "\\&gt;")]
+         [str (regexp-replace* #rx"\"" str "\\&quot;")]
+         [str (regexp-replace* #rx"'" str "\\&#39;")])
     str))
 
 ;; Data Conversion
@@ -466,29 +467,223 @@ Focus on:
           (current-milliseconds)
           (random 10000)))
 
+;; ============================================================================
 ;; Unit Tests
-;; ----------
+;; ============================================================================
 
 (module+ test
-  (require rackunit)
-  
-  (test-case "URL validation"
+  (require rackunit
+           racket/file)
+
+  ;; URL Validation Tests
+  (test-case "ok-http-url? validates HTTP URLs"
     (check-true (ok-http-url? "http://example.com"))
     (check-true (ok-http-url? "https://example.com/path"))
+    (check-true (ok-http-url? "http://localhost:8080"))
+    (check-true (ok-http-url? "https://sub.domain.example.com/path?q=1")))
+
+  (test-case "ok-http-url? rejects invalid URLs"
     (check-false (ok-http-url? "ftp://example.com"))
-    (check-false (ok-http-url? "not a url")))
-  
-  (test-case "String manipulation"
-    (check-equal? (string-normalize-spaces "  hello   world  ")
-                  "hello world")
+    (check-false (ok-http-url? "not a url"))
+    (check-false (ok-http-url? ""))
+    (check-false (ok-http-url? 123))
+    (check-false (ok-http-url? #f))
+    (check-false (ok-http-url? "mailto:test@example.com")))
+
+  (test-case "valid-url? is alias for ok-http-url?"
+    (check-true (valid-url? "http://example.com"))
+    (check-false (valid-url? "not valid")))
+
+  (test-case "url-encode-path encodes special characters"
+    (check-equal? (url-encode-path "hello world") "hello%20world")
+    (check-equal? (url-encode-path "a/b") "a%2Fb")
+    (check-equal? (url-encode-path "") ""))
+
+  (test-case "url-decode-safe decodes URLs"
+    (check-equal? (url-decode-safe "hello%20world") "hello world")
+    (check-equal? (url-decode-safe "normal") "normal")
+    ;; Invalid encoding returns original
+    (check-equal? (url-decode-safe "%ZZ") "%ZZ"))
+
+  (test-case "extract-domain extracts domain"
+    (check-equal? (extract-domain "http://example.com/path") "http://example.com")
+    (check-equal? (extract-domain "https://sub.domain.com/") "https://sub.domain.com")
+    (check-false (extract-domain "not a url")))
+
+  (test-case "normalize-protocol adds protocol"
+    (check-equal? (normalize-protocol "example.com") "http://example.com")
+    (check-equal? (normalize-protocol "http://example.com") "http://example.com")
+    (check-equal? (normalize-protocol "https://example.com") "https://example.com"))
+
+  ;; String Manipulation Tests
+  (test-case "string-normalize-spaces collapses whitespace"
+    (check-equal? (string-normalize-spaces "  hello   world  ") "hello world")
+    (check-equal? (string-normalize-spaces "a\t\nb") "a b")
+    (check-equal? (string-normalize-spaces "") ""))
+
+  (test-case "string-truncate limits length"
     (check-equal? (string-truncate "hello world" 5) "hello")
-    (check-equal? (string-truncate "hi" 5) "hi"))
-  
-  (test-case "List utilities"
+    (check-equal? (string-truncate "hi" 5) "hi")
+    (check-equal? (string-truncate "exact" 5) "exact")
+    (check-equal? (string-truncate "" 5) ""))
+
+  (test-case "string-clean removes control characters"
+    (check-equal? (string-clean "hello\x00world") "helloworld")
+    (check-equal? (string-clean "a\x1Fb") "ab")
+    (check-equal? (string-clean "normal") "normal"))
+
+  (test-case "string-contains-any? checks multiple substrings"
+    (check-true (string-contains-any? "hello world" '("hello" "foo")))
+    (check-true (string-contains-any? "hello world" '("world")))
+    (check-false (string-contains-any? "hello world" '("foo" "bar")))
+    (check-false (string-contains-any? "hello" '())))
+
+  (test-case "substring-after-target extracts suffix"
+    (check-equal? (substring-after-target "hello world" "hello ") "world")
+    (check-equal? (substring-after-target "abc" "b") "c")
+    (check-false (substring-after-target "hello" "x")))
+
+  ;; JSON Utilities Tests
+  (test-case "safe-string->jsexpr parses JSON"
+    (check-equal? (hash-ref (safe-string->jsexpr "{\"a\": 1}") 'a) 1)
+    (check-equal? (safe-string->jsexpr "[1, 2, 3]") '(1 2 3))
+    (check-false (safe-string->jsexpr "not json"))
+    (check-false (safe-string->jsexpr "")))
+
+  (test-case "pretty-print-json formats JSON"
+    (let ([result (pretty-print-json (hash 'a 1))])
+      (check-true (string? result))
+      (check-true (string-contains? result "a"))))
+
+  (test-case "extract-json-from-string finds JSON"
+    (check-equal? (extract-json-from-string "prefix {\"a\": 1} suffix") "{\"a\": 1}")
+    (check-false (extract-json-from-string "no json here")))
+
+  ;; HTML/XML Utilities Tests
+  (test-case "html->text removes tags"
+    (check-equal? (html->text "<p>hello</p>") "hello")
+    (check-equal? (html->text "<div><span>test</span></div>") "test"))
+
+  (test-case "remove-html-tags strips HTML"
+    (check-equal? (remove-html-tags "<p>text</p>") "text")
+    (check-equal? (remove-html-tags "<a href='url'>link</a>") "link")
+    (check-equal? (remove-html-tags "no tags") "no tags"))
+
+  (test-case "escape-html escapes special chars"
+    (check-equal? (escape-html "<script>") "&lt;script&gt;")
+    (check-equal? (escape-html "a & b") "a &amp; b")
+    (check-equal? (escape-html "\"quoted\"") "&quot;quoted&quot;")
+    (check-equal? (escape-html "'single'") "&#39;single&#39;"))
+
+  ;; Data Conversion Tests
+  (test-case "utils:moment->iso8601 formats moment"
+    (let* ([m (moment 2024 1 15 10 30 0)]
+           [result (utils:moment->iso8601 m)])
+      (check-true (string-contains? result "2024"))
+      (check-true (string-contains? result "01-15"))))
+
+  (test-case "utils:iso8601->moment parses timestamp"
+    (let ([result (utils:iso8601->moment "2024-01-15T10:30:00")])
+      (check-true (moment? result))))
+
+  (test-case "safe-string->number converts numbers"
+    (check-equal? (safe-string->number "123") 123)
+    (check-equal? (safe-string->number "3.14") 3.14)
+    (check-false (safe-string->number "not a number")))
+
+  (test-case "bytes->string-safe converts bytes"
+    (check-equal? (bytes->string-safe #"hello") "hello")
+    (check-true (string? (bytes->string-safe #"\xff"))))
+
+  ;; List Utilities Tests
+  (test-case "list-slice extracts slices"
     (check-equal? (list-slice '(1 2 3 4 5) 1 3) '(2 3))
     (check-equal? (list-slice '(1 2 3) 2) '(3))
-    (check-equal? (list-slice '(1 2 3) 5) '()))
-  
-  (test-case "Safe file names"
+    (check-equal? (list-slice '(1 2 3) 5) '())
+    (check-equal? (list-slice '(1 2 3 4 5) 0 10) '(1 2 3 4 5)))
+
+  (test-case "remove-duplicates-by removes by key"
+    (let ([result (remove-duplicates-by '((a . 1) (b . 1) (c . 2)) cdr)])
+      (check-equal? (length result) 2)))
+
+  (test-case "group-by-key groups items"
+    (let ([result (group-by-key '(1 2 3 4 5 6) (lambda (x) (modulo x 2)))])
+      (check-equal? (length result) 2)))
+
+  ;; Hash Utilities Tests
+  (test-case "deep-merge-hash merges deeply"
+    (let ([result (deep-merge-hash
+                   (hash 'a 1 'b (hash 'x 1))
+                   (hash 'b (hash 'y 2) 'c 3))])
+      (check-equal? (hash-ref result 'a) 1)
+      (check-equal? (hash-ref result 'c) 3)
+      (check-equal? (hash-ref (hash-ref result 'b) 'x) 1)
+      (check-equal? (hash-ref (hash-ref result 'b) 'y) 2)))
+
+  (test-case "hash-filter filters by predicate"
+    (let ([result (hash-filter (hash 'a 1 'b 2 'c 3)
+                               (lambda (k v) (> v 1)))])
+      (check-equal? (hash-count result) 2)
+      (check-false (hash-has-key? result 'a))))
+
+  (test-case "hash-map-values transforms values"
+    (let ([result (hash-map-values (hash 'a 1 'b 2) add1)])
+      (check-equal? (hash-ref result 'a) 2)
+      (check-equal? (hash-ref result 'b) 3)))
+
+  ;; File System Tests
+  (test-case "ensure-directory creates directory"
+    (let ([dir (make-temporary-file "testdir-~a" 'directory)])
+      (dynamic-wind
+        void
+        (lambda ()
+          (let ([subdir (build-path dir "subdir")])
+            (ensure-directory subdir)
+            (check-true (directory-exists? subdir))))
+        (lambda () (delete-directory/files dir)))))
+
+  (test-case "safe-file-name sanitizes names"
     (check-equal? (safe-file-name "hello world.txt") "hello-world.txt")
-    (check-equal? (safe-file-name "file/with\\path") "file-with-path")))
+    (check-equal? (safe-file-name "file/with\\path") "file-with-path")
+    (check-equal? (safe-file-name "special!@#chars") "special---chars"))
+
+  (test-case "path-append combines paths"
+    (let ([result (path-append "/base" "sub" "file.txt")])
+      (check-true (path? result))))
+
+  ;; Error Handling Tests
+  (test-case "with-retry retries on failure"
+    (let ([counter 0])
+      (check-exn exn:fail?
+                 (lambda ()
+                   (with-retry (lambda ()
+                                 (set! counter (add1 counter))
+                                 (error "fail"))
+                               2)))
+      (check-equal? counter 3)))  ;; 1 initial + 2 retries
+
+  (test-case "with-retry succeeds without retry"
+    (check-equal? (with-retry (lambda () 42) 3) 42))
+
+  (test-case "safe-execute returns default on error"
+    (check-equal? (safe-execute (lambda () (error "fail")) "default") "default")
+    (check-equal? (safe-execute (lambda () 42) "default") 42))
+
+  ;; LLM Messages Tests
+  (test-case "xpath-guesser-message is valid hash"
+    (check-true (hash? xpath-guesser-message))
+    (check-equal? (hash-ref xpath-guesser-message 'role) "system"))
+
+  (test-case "xpath-reguesser-message is valid hash"
+    (check-true (hash? xpath-reguesser-message))
+    (check-equal? (hash-ref xpath-reguesser-message 'role) "system"))
+
+  ;; Misc Utilities Tests
+  (test-case "generate-timestamp returns ISO format"
+    (let ([ts (generate-timestamp)])
+      (check-true (string? ts))
+      (check-true (regexp-match? #px"\\d{4}-\\d{2}-\\d{2}" ts))))
+
+  (test-case "generate-unique-id includes prefix"
+    (let ([id (generate-unique-id "test")])
+      (check-true (string-prefix? id "test-")))))

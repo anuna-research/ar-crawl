@@ -829,4 +829,67 @@
                                        'content "中文内容"))
           (close-sqlite-formatter fmt))
         (let ([results (query-crawl-results path "SELECT title FROM crawled_pages")])
-          (check-equal? (vector-ref (car results) 0) "日本語タイトル"))))))
+          (check-equal? (vector-ref (car results) 0) "日本語タイトル")))))
+
+  ;; Site crawl data format tests
+  (test-case "format-data-sqlite with site crawl format"
+    (with-temp-db
+      (lambda (path)
+        (let* ([pages (list (hash 'url "http://test.com/page1" 'title "Page 1" 'content "content1"
+                                  'links '("http://test.com/page2"))
+                           (hash 'url "http://test.com/page2" 'title "Page 2" 'content "content2"))]
+               [metadata (hash 'seed-url "http://test.com"
+                              'pages pages
+                              'statistics (hash 'duration-ms 1000
+                                               'pages-crawled 2
+                                               'total-urls-discovered 5
+                                               'average-page-time-ms 500.0))])
+          (check-true (format-data-sqlite '() path metadata))
+          ;; Check pages were inserted
+          (let ([results (query-crawl-results path "SELECT COUNT(*) FROM crawled_pages")])
+            (check-equal? (vector-ref (car results) 0) 2))
+          ;; Check links were inserted
+          (let ([links (query-crawl-results path "SELECT COUNT(*) FROM discovered_links")])
+            (check-equal? (vector-ref (car links) 0) 1))))))
+
+  ;; Extracted items format tests
+  (test-case "write-item-sqlite with extracted item format"
+    (with-temp-db
+      (lambda (path)
+        (let ([fmt (create-sqlite-formatter path (hash 'seed-url "http://test.com"))])
+          ;; Item without 'url key - should be treated as extracted item
+          (write-item-sqlite fmt (hash 'field1 "value1" 'field2 "value2" 'timestamp "2024-01-01"))
+          (close-sqlite-formatter fmt))
+        (let ([results (query-crawl-results path "SELECT item_data FROM extracted_items")])
+          (check-true (> (length results) 0))))))
+
+  ;; Insert extracted items test
+  (test-case "format-data-sqlite with extracted items"
+    (with-temp-db
+      (lambda (path)
+        (let ([data (list (hash 'url "http://test.com/item1" 'name "Product 1" 'price "$10")
+                         (hash 'url "http://test.com/item2" 'name "Product 2" 'price "$20"))]
+              [metadata (hash 'seed-url "http://test.com")])
+          (check-true (format-data-sqlite data path metadata))))))
+
+  ;; SCHEMA-SQL string test
+  (test-case "SCHEMA-SQL is valid string"
+    (check-true (string? SCHEMA-SQL))
+    (check-true (string-contains? SCHEMA-SQL "CREATE TABLE")))
+
+  ;; Additional generate-crawl-id tests
+  (test-case "generate-crawl-id without seed-url"
+    (let ([id (generate-crawl-id (hash 'other-key "value"))])
+      (check-true (string-contains? id "crawl-"))))
+
+  ;; Database directory creation test
+  (test-case "format-data-sqlite creates directory if needed"
+    (let ([temp-dir (make-temporary-file "test-dir-~a" 'directory)])
+      (dynamic-wind
+        void
+        (lambda ()
+          (let ([path (build-path temp-dir "subdir" "test.db")]
+                [metadata (hash 'seed-url "http://test.com")])
+            (check-true (format-data-sqlite '() path metadata))))
+        (lambda ()
+          (delete-directory/files temp-dir))))))

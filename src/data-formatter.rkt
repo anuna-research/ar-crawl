@@ -54,39 +54,39 @@
 ;; @param[format]{(or/c 'json 'csv 'ndjson)} Output format
 ;; @param[output-path]{path-string?} Output file path
 ;; @returns{boolean?} Success status
-(define (format-data data format output-path)
-  (with-handlers ([exn:fail? 
+(define (format-data data output-format output-path)
+  (with-handlers ([exn:fail?
                    (lambda (exn)
                      (raise (exn:scraper:parse
-                             (format "Failed to format data: ~a" 
+                             (format "Failed to format data: ~a"
                                      (exn-message exn))
                              (current-continuation-marks))))])
-    
+
     ;; Ensure output directory exists
     (let ([dir (path-only output-path)])
       (when dir
         (make-directory* dir)))
-    
-    (match format
+
+    (match output-format
       ['json (save-as-json data output-path)]
       ['csv (save-as-csv data output-path)]
       ['ndjson (save-as-ndjson data output-path)]
       ['sqlite (format-data-sqlite data output-path (hash))]
-      [else (error 'format-data "Unknown format: ~a" format)])
-    
+      [else (error 'format-data "Unknown format: ~a" output-format)])
+
     #t))
 
 ;; @function{format-data-with-metadata}
 ;; @description{Format and save data with metadata (required for SQLite)}
 ;; @param[data]{listof hash?} Data to format
-;; @param[format]{(or/c 'json 'csv 'ndjson 'sqlite)} Output format
+;; @param[output-format]{(or/c 'json 'csv 'ndjson 'sqlite)} Output format
 ;; @param[output-path]{path-string?} Output file path
 ;; @param[metadata]{hash?} Crawl metadata
 ;; @returns{boolean?} Success status
-(define (format-data-with-metadata data format output-path metadata)
-  (match format
+(define (format-data-with-metadata data output-format output-path metadata)
+  (match output-format
     ['sqlite (format-data-sqlite data output-path metadata)]
-    [else (format-data data format output-path)]))
+    [else (format-data data output-format output-path)]))
 
 ;; @function{save-as-json}
 ;; @description{Save data as JSON array}
@@ -109,14 +109,16 @@
     (call-with-output-file output-path
       (lambda (out) (void))
       #:exists 'replace))
-  
-  (let* ([headers (extract-headers data)]
-         [rows (map (lambda (item) (hash->row item headers)) data)])
-    
-    (call-with-output-file output-path
-      (lambda (out)
-        (display-table (cons headers rows) out))
-      #:exists 'replace)))
+
+  (unless (empty? data)
+    (let* ([headers (extract-headers data)]
+           [header-strings (map symbol->string headers)]
+           [rows (map (lambda (item) (hash->row item headers)) data)])
+
+      (call-with-output-file output-path
+        (lambda (out)
+          (display-table (cons header-strings rows) out))
+        #:exists 'replace))))
 
 ;; @function{save-as-ndjson}
 ;; @description{Save data as newline-delimited JSON}
@@ -136,11 +138,13 @@
 ;; @param[data]{listof hash?} Data items
 ;; @returns{listof string?} List of headers
 (define (extract-headers data)
-  (let ([all-keys (apply set-union 
-                         (map (lambda (item) 
-                                (list->set (hash-keys item))) 
-                              data))])
-    (sort (set->list all-keys) symbol<?)))
+  (if (empty? data)
+      '()
+      (let ([all-keys (apply set-union
+                             (map (lambda (item)
+                                    (list->set (hash-keys item)))
+                                  data))])
+        (sort (set->list all-keys) symbol<?))))
 
 ;; @function{hash->row}
 ;; @description{Convert hash to CSV row based on headers}
@@ -343,14 +347,14 @@
     (let ([headers (extract-headers test-data)])
       (check-true (list? headers))
       (check-equal? (length headers) 3)
-      (check-true (member 'name headers))
-      (check-true (member 'price headers))
-      (check-true (member 'active headers))))
+      (check-not-false (member 'name headers))
+      (check-not-false (member 'price headers))
+      (check-not-false (member 'active headers))))
 
   (test-case "extract-headers handles different keys"
     (let ([headers (extract-headers test-data-with-extras)])
-      (check-true (member 'category headers))
-      (check-true (member 'tags headers))))
+      (check-not-false (member 'category headers))
+      (check-not-false (member 'tags headers))))
 
   (test-case "extract-headers returns sorted list"
     (let ([headers (extract-headers test-data)])
