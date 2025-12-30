@@ -22,6 +22,7 @@
          "scraper-interfaces.rkt"
          "site-crawler.rkt"
          "data-formatter.rkt"
+         "html-extractor.rkt"
          "utils.rkt")
 
 ;; Global state
@@ -342,6 +343,209 @@
           
           (output-site-results site-results output-file format verbose)))))
 
+;; @function{cmd-extract}
+;; @description{Extract structured data from crawl results using XPath}
+(define (cmd-extract input-file
+                     #:xpath [xpath-map-str #f]
+                     #:parent [parent-xpath #f]
+                     #:fields [field-xpaths-str #f]
+                     #:output [output-file #f]
+                     #:format [format 'json]
+                     #:verbose [verbose #f])
+
+  ;; Parse xpath-map from JSON string or build from parent/fields
+  (define xpath-map
+    (cond
+      [xpath-map-str
+       ;; Parse JSON object: {"name": "//h1", "price": "//span[@class='price']"}
+       (with-handlers ([exn:fail? (lambda (e)
+                                    (printf "Error parsing XPath map: ~a~n" (exn-message e))
+                                    (exit 1))])
+         (let ([parsed (string->jsexpr xpath-map-str)])
+           (for/hash ([(k v) (in-hash parsed)])
+             (values (if (string? k) (string->symbol k) k) v))))]
+
+      [(and parent-xpath field-xpaths-str)
+       ;; Build from parent + fields for item extraction
+       (hash 'parent parent-xpath
+             'fields (with-handlers ([exn:fail? (lambda (e) (hash))])
+                      (string->jsexpr field-xpaths-str)))]
+
+      [else
+       (printf "Error: Must provide either --xpath-map or both --parent and --fields~n")
+       (printf "~nUsage:~n")
+       (printf "  ar-crawl extract <file> --xpath-map '{\"name\": \"//h1\", \"price\": \"//span\"}'~n")
+       (printf "  ar-crawl extract <file> --parent \"//div[@class='product']\" --fields '{\"name\": \".//h2\", \"price\": \".//span\"}'~n")
+       (exit 1)]))
+
+  (when verbose
+    (printf "Extracting from: ~a~n" input-file)
+    (printf "XPath map: ~a~n" xpath-map))
+
+  ;; Load input file
+  (define input-data
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (printf "Error loading file: ~a~n" (exn-message e))
+                                 (exit 1))])
+      (call-with-input-file input-file
+        (lambda (port)
+          (string->jsexpr (port->string port))))))
+
+  ;; Get items to process
+  (define items (hash-ref input-data 'data '()))
+
+  (when verbose
+    (printf "Found ~a items to process~n" (length items)))
+
+  ;; Extract from each item
+  (define results
+    (cond
+      ;; Item extraction with parent + fields
+      [(hash-ref xpath-map 'parent #f)
+       (define parent (hash-ref xpath-map 'parent))
+       (define fields (hash-ref xpath-map 'fields (hash)))
+       (for/fold ([all-items '()])
+                 ([item items]
+                  #:when (hash? item))
+         (define content (hash-ref item 'content ""))
+         (define url (hash-ref item 'url ""))
+         (define extracted (extract-items content parent fields))
+         (append all-items
+                 (for/list ([e extracted])
+                   (hash-set e 'source_url url))))]
+
+      ;; Simple field extraction
+      [else
+       (for/list ([item items]
+                  #:when (hash? item))
+         (define content (hash-ref item 'content ""))
+         (define url (hash-ref item 'url ""))
+         (define title (hash-ref item 'title ""))
+         (define extracted (extract-by-xpaths content xpath-map))
+         (hash-set (hash-set extracted 'source_url url)
+                   'source_title title))]))
+
+  (printf "Extracted ~a records~n" (length results))
+
+  ;; Output results
+  (define output-data
+    (hash 'data results
+          'metadata (hash 'source input-file
+                         'xpath_map xpath-map
+                         'record_count (length results))
+          'timestamp (generate-timestamp)))
+
+  (if output-file
+      (begin
+        (ensure-directory (or (path-only output-file) (current-directory)))
+        (case format
+          [(json)
+           (call-with-output-file output-file
+             (lambda (port)
+               (write-json output-data port #:indent 2))
+             #:exists 'replace)]
+          [(csv)
+           (call-with-output-file output-file
+             (lambda (port)
+               (extracted-results->csv results port))
+             #:exists 'replace)]
+          [(sqlite)
+           (format-data-with-metadata results 'sqlite output-file output-data)]
+          [else
+           (call-with-output-file output-file
+             (lambda (port)
+               (write-json output-data port #:indent 2))
+             #:exists 'replace)])
+        (printf "Results saved to: ~a~n" output-file))
+      ;; Output to stdout
+      (write-json output-data (current-output-port) #:indent 2)))
+
+;; @function{cmd-sample}
+;; @description{Show sample HTML from crawl results to help figure out XPaths}
+(define (cmd-sample input-file
+                    #:index [index 0]
+                    #:length [max-length 5000])
+
+  ;; Load input file
+  (define input-data
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (printf "Error loading file: ~a~n" (exn-message e))
+                                 (exit 1))])
+      (call-with-input-file input-file
+        (lambda (port)
+          (string->jsexpr (port->string port))))))
+
+  ;; Get items
+  (define items (hash-ref input-data 'data '()))
+
+  (when (empty? items)
+    (printf "No items found in ~a~n" input-file)
+    (exit 1))
+
+  (when (>= index (length items))
+    (printf "Index ~a out of range. File has ~a items (0-~a)~n"
+            index (length items) (- (length items) 1))
+    (exit 1))
+
+  (define item (list-ref items index))
+  (define url (hash-ref item 'url ""))
+  (define title (hash-ref item 'title ""))
+  (define content (hash-ref item 'content ""))
+
+  (printf "~n=== Sample HTML from Crawl Results ===~n")
+  (printf "File: ~a~n" input-file)
+  (printf "Index: ~a of ~a~n" index (length items))
+  (printf "URL: ~a~n" url)
+  (printf "Title: ~a~n" title)
+  (printf "Content length: ~a characters~n" (string-length content))
+  (printf "~n--- HTML Content (first ~a chars) ---~n~n" max-length)
+
+  ;; Pretty print the HTML with some basic formatting
+  (define truncated
+    (if (> (string-length content) max-length)
+        (string-append (substring content 0 max-length) "\n\n... [truncated]")
+        content))
+
+  (displayln truncated)
+
+  (printf "~n--- XPath Tips ---~n")
+  (printf "Common patterns to look for in the HTML:~n")
+  (printf "  - class=\"...\"  -> //tag[@class='value'] or //tag[contains(@class,'partial')]~n")
+  (printf "  - data-testid  -> //tag[@data-testid='value']~n")
+  (printf "  - id=\"...\"    -> //tag[@id='value']~n")
+  (printf "~nUse with: ar-crawl extract ~a --xpath-map '{\"field\": \"//xpath\"}'~n" input-file))
+
+;; @function{extracted-results->csv}
+;; @description{Convert extracted results to CSV format}
+(define (extracted-results->csv results port)
+  (when (not (empty? results))
+    ;; Get all unique keys
+    (define all-keys
+      (remove-duplicates
+       (apply append (map hash-keys results))))
+
+    ;; Write header
+    (displayln (string-join (map symbol->string all-keys) ",") port)
+
+    ;; Write rows
+    (for ([result results])
+      (define row
+        (for/list ([key all-keys])
+          (define val (hash-ref result key ""))
+          (define str-val
+            (cond
+              [(string? val) val]
+              [(list? val) (string-join val "; ")]
+              [(not val) ""]
+              [else (format "~a" val)]))
+          ;; CSV escape
+          (if (or (string-contains? str-val ",")
+                  (string-contains? str-val "\"")
+                  (string-contains? str-val "\n"))
+              (format "\"~a\"" (string-replace str-val "\"" "\"\""))
+              str-val)))
+      (displayln (string-join row ",") port))))
+
 ;; @function{output-site-results}
 ;; @description{Output site crawl results to file}
 (define (output-site-results results output-file format verbose)
@@ -658,137 +862,275 @@
 ;; Main CLI Parser
 ;; ---------------
 
-(define (main)
+;; @function{find-command-index}
+;; @description{Find the index of the first non-flag argument (the command)}
+(define (find-command-index args)
+  (for/first ([i (in-naturals)]
+              [arg args]
+              #:when (and (not (string-prefix? arg "-"))
+                          (not (string-prefix? arg "/"))))
+    i))
+
+;; @function{split-args-at-command}
+;; @description{Split argument list at the command position}
+(define (split-args-at-command args)
+  (define cmd-index (find-command-index args))
+  (if cmd-index
+      (values (take args cmd-index)
+              (list-ref args cmd-index)
+              (drop args (add1 cmd-index)))
+      (values args #f '())))
+
+;; @function{parse-extract-args}
+;; @description{Parse extract command arguments after the file}
+(define (parse-extract-args args)
   (command-line
-   #:program "ar-crawl"
+   #:program "ar-crawl extract"
+   #:argv args
    #:once-each
-   [("--version") "Show version information"
-    (show-version)
-    (exit 0)]
-   [("-v" "--verbose") "Enable verbose output with detailed progress and debugging"
-    (verbose-mode #t)]
-   [("-c" "--config") config-file "Path to JSON configuration file (auto-detected if not specified)"
-    (config-file-path config-file)]
-   [("--max-pages") pages "Maximum number of pages to crawl for crawl-site (default: 50)"
-    (max-pages (string->number pages))]
-   [("--max-depth") depth "Maximum link-following depth for crawl-site (default: 3)"
-    (max-depth (string->number depth))]
-   [("--url-pattern") pattern "Regex pattern to filter URLs, e.g. \"/blog/.*\" (default: \".*\")"
-    (url-pattern pattern)]
-   [("--allow-external") "Allow following links to external domains (default: same-domain only)"
-    (same-domain-only #f)]
-   [("--crawl-delay") delay "Delay between requests in milliseconds (default: 1000)"
-    (crawl-delay-ms (string->number delay))]
-   [("-o" "--output") file "Save results to file instead of stdout (path to output file)"
+   [("--xpath-map") xpath-json "JSON object mapping field names to XPath expressions"
+    (extract-xpath-param xpath-json)]
+   [("--parent") parent "Parent XPath for item extraction (use with --fields)"
+    (extract-parent-param parent)]
+   [("--fields") fields-json "JSON object mapping field names to relative XPaths (use with --parent)"
+    (extract-fields-param fields-json)]
+   [("-o" "--output") file "Save results to file"
     (output-file-param file)]
-   [("-f" "--format") fmt "Output format: json (default), csv, markdown, or sqlite"
+   [("-f" "--format") fmt "Output format: json (default), csv, sqlite"
     (output-format-param (string->symbol fmt))]
-   [("--xpath") xpath "XPath expression to filter HTML content, e.g. \"//article\""
+   [("-v" "--verbose") "Show detailed progress"
+    (verbose-mode #t)]
+   #:args remaining
+   remaining))
+
+;; @function{parse-sample-args}
+;; @description{Parse sample command arguments after the file}
+(define (parse-sample-args args)
+  (command-line
+   #:program "ar-crawl sample"
+   #:argv args
+   #:once-each
+   [("--index") idx "Index of page to show (default: 0)"
+    (sample-index-param (string->number idx))]
+   [("--length") len "Max length of HTML to show (default: 5000)"
+    (sample-length-param (string->number len))]
+   #:args remaining
+   remaining))
+
+;; @function{parse-crawl-args}
+;; @description{Parse crawl command arguments after the URL}
+(define (parse-crawl-args args)
+  (command-line
+   #:program "ar-crawl crawl"
+   #:argv args
+   #:once-each
+   [("-v" "--verbose") "Enable verbose output"
+    (verbose-mode #t)]
+   [("-c" "--config") config-file "Path to configuration file"
+    (config-file-path config-file)]
+   [("-o" "--output") file "Save results to file"
+    (output-file-param file)]
+   [("-f" "--format") fmt "Output format: json, csv, markdown, sqlite"
+    (output-format-param (string->symbol fmt))]
+   [("--xpath") xpath "XPath expression to filter HTML content"
     (xpath-filter-param xpath)]
-
-   ;; Playwright-specific options (only apply when using -s playwright)
-   [("--pw-scroll") "Scroll to bottom of page (for lazy-loaded content)"
+   [("--pw-scroll") "Scroll to bottom of page"
     (pw-scroll #t)]
-   [("--pw-scroll-count") count "Number of scroll iterations for infinite scroll (default: 0)"
+   [("--pw-scroll-count") count "Number of scroll iterations"
     (pw-scroll-count (string->number count))]
-   [("--pw-scroll-delay") delay "Delay between scrolls in ms (default: 1000)"
+   [("--pw-scroll-delay") delay "Delay between scrolls in ms"
     (pw-scroll-delay (string->number delay))]
-   [("--pw-click") selector "CSS selector to click (e.g., 'button.load-more')"
+   [("--pw-click") selector "CSS selector to click"
     (pw-click-selector selector)]
-   [("--pw-click-count") count "Number of times to click selector (default: 1)"
+   [("--pw-click-count") count "Number of times to click"
     (pw-click-count (string->number count))]
-   [("--pw-delay") delay "Delay after page load in ms for SPA rendering (default: 5000)"
+   [("--pw-delay") delay "Delay after page load in ms"
     (pw-delay (string->number delay))]
-
    #:multi
-   [("-s" "--service") service "Crawling service to use: direct, playwright, firecrawl, etc. (repeatable for fallback)"
+   [("-s" "--service") service "Crawling service to use (repeatable)"
     (selected-services (cons (string->symbol service) (selected-services)))]
-   
-   #:args args
+   #:args remaining
+   remaining))
 
-   (cond
-     [(empty? args)
-      (show-main-help)]
-     
-     [else
-      (define command (string->symbol (car args)))
-      (define command-args (cdr args))
-      
-      (case command
-        [(crawl)
-         (when (empty? command-args)
-           (printf "Error: URL required for crawl command~n~n")
-           (printf "Usage: ar-crawl crawl <url> [options]~n")
-           (printf "Run 'ar-crawl help crawl' for more information.~n")
-           (exit 1))
-         (cmd-crawl (car command-args)
-                    #:config (config-file-path)
-                    #:services (selected-services)
-                    #:verbose (verbose-mode)
-                    #:output (output-file-param)
-                    #:format (output-format-param)
-                    #:xpath (xpath-filter-param)
-                    #:scroll (pw-scroll)
-                    #:scroll-count (pw-scroll-count)
-                    #:scroll-delay (pw-scroll-delay)
-                    #:click-selector (pw-click-selector)
-                    #:click-count (pw-click-count)
-                    #:pw-delay (pw-delay))]
-        
-        [(crawl-site)
-         (when (empty? command-args)
-           (printf "Error: URL required for crawl-site command~n~n")
-           (printf "Usage: ar-crawl crawl-site <url> [options]~n")
-           (printf "Run 'ar-crawl help crawl-site' for more information.~n")
-           (exit 1))
+;; @function{parse-crawl-site-args}
+;; @description{Parse crawl-site command arguments after the URL}
+(define (parse-crawl-site-args args)
+  (command-line
+   #:program "ar-crawl crawl-site"
+   #:argv args
+   #:once-each
+   [("-v" "--verbose") "Enable verbose output"
+    (verbose-mode #t)]
+   [("-c" "--config") config-file "Path to configuration file"
+    (config-file-path config-file)]
+   [("-o" "--output") file "Save results to file"
+    (output-file-param file)]
+   [("-f" "--format") fmt "Output format: json, csv, markdown, sqlite"
+    (output-format-param (string->symbol fmt))]
+   [("--xpath") xpath "XPath expression to filter HTML content"
+    (xpath-filter-param xpath)]
+   [("--max-pages") pages "Maximum number of pages to crawl (default: 50)"
+    (max-pages (string->number pages))]
+   [("--max-depth") depth "Maximum link-following depth (default: 3)"
+    (max-depth (string->number depth))]
+   [("--url-pattern") pattern "Regex pattern to filter URLs"
+    (url-pattern pattern)]
+   [("--allow-external") "Allow following links to external domains"
+    (same-domain-only #f)]
+   [("--crawl-delay") delay "Delay between requests in ms (default: 1000)"
+    (crawl-delay-ms (string->number delay))]
+   #:multi
+   [("-s" "--service") service "Crawling service to use (repeatable)"
+    (selected-services (cons (string->symbol service) (selected-services)))]
+   #:args remaining
+   remaining))
 
-         (cmd-crawl-site (car command-args)
-         #:config (config-file-path)
-         #:services (selected-services)
-         #:verbose (verbose-mode)
-         #:max-pages (max-pages)
-         #:max-depth (max-depth)
-         #:url-pattern (url-pattern)
-         #:same-domain (same-domain-only)
-         #:crawl-delay (crawl-delay-ms)
-         #:output (output-file-param)
-         #:format (output-format-param)
-                         #:xpath (xpath-filter-param))]
-        
-        [(health)
-         (cmd-health #:config (config-file-path)
+(define (main)
+  (define args (vector->list (current-command-line-arguments)))
+
+  ;; Handle --help and --version at any position
+  (when (or (member "--help" args) (member "-h" args))
+    (show-main-help)
+    (exit 0))
+  (when (member "--version" args)
+    (show-version)
+    (exit 0))
+
+  ;; Find the command (first non-flag argument)
+  (define-values (pre-cmd-args command post-cmd-args) (split-args-at-command args))
+
+  ;; Parse global flags from pre-command arguments
+  (when (not (empty? pre-cmd-args))
+    (command-line
+     #:program "ar-crawl"
+     #:argv pre-cmd-args
+     #:once-each
+     [("-v" "--verbose") "Enable verbose output"
+      (verbose-mode #t)]
+     [("-c" "--config") config-file "Path to configuration file"
+      (config-file-path config-file)]
+     #:multi
+     [("-s" "--service") service "Crawling service to use"
+      (selected-services (cons (string->symbol service) (selected-services)))]
+     #:args remaining
+     (when (not (empty? remaining))
+       (printf "Error: Unexpected arguments before command: ~a~n" remaining)
+       (exit 1))))
+
+  (cond
+    [(not command)
+     (show-main-help)]
+
+    [else
+     (define cmd-sym (string->symbol command))
+
+     (case cmd-sym
+       [(crawl)
+        (when (empty? post-cmd-args)
+          (printf "Error: URL required for crawl command~n~n")
+          (printf "Usage: ar-crawl crawl <url> [options]~n")
+          (printf "Run 'ar-crawl help crawl' for more information.~n")
+          (exit 1))
+        (define url (car post-cmd-args))
+        (parse-crawl-args (cdr post-cmd-args))
+        (cmd-crawl url
+                   #:config (config-file-path)
+                   #:services (selected-services)
+                   #:verbose (verbose-mode)
+                   #:output (output-file-param)
+                   #:format (output-format-param)
+                   #:xpath (xpath-filter-param)
+                   #:scroll (pw-scroll)
+                   #:scroll-count (pw-scroll-count)
+                   #:scroll-delay (pw-scroll-delay)
+                   #:click-selector (pw-click-selector)
+                   #:click-count (pw-click-count)
+                   #:pw-delay (pw-delay))]
+
+       [(crawl-site)
+        (when (empty? post-cmd-args)
+          (printf "Error: URL required for crawl-site command~n~n")
+          (printf "Usage: ar-crawl crawl-site <url> [options]~n")
+          (printf "Run 'ar-crawl help crawl-site' for more information.~n")
+          (exit 1))
+        (define url (car post-cmd-args))
+        (parse-crawl-site-args (cdr post-cmd-args))
+        (cmd-crawl-site url
+                        #:config (config-file-path)
+                        #:services (selected-services)
+                        #:verbose (verbose-mode)
+                        #:max-pages (max-pages)
+                        #:max-depth (max-depth)
+                        #:url-pattern (url-pattern)
+                        #:same-domain (same-domain-only)
+                        #:crawl-delay (crawl-delay-ms)
+                        #:output (output-file-param)
+                        #:format (output-format-param)
+                        #:xpath (xpath-filter-param))]
+
+       [(health)
+        (cmd-health #:config (config-file-path)
                     #:verbose (verbose-mode))]
-        
-        [(test)
-         (cmd-test #:config (config-file-path)
+
+       [(test)
+        (cmd-test #:config (config-file-path)
                   #:verbose (verbose-mode))]
-        
-        [(config)
-         (when (empty? command-args)
-           (printf "Error: Subcommand required for config command~n~n")
-           (printf "Usage: ar-crawl config <subcommand>~n")
-           (printf "Subcommands: init, show, validate~n")
-           (printf "Run 'ar-crawl help config' for more information.~n")
-           (exit 1))
-         (cmd-config (string->symbol (car command-args)))]
-        
-        [(services)
-         (cmd-services #:verbose (verbose-mode))]
-        
-        [(monitor)
-         (cmd-monitor #:config (config-file-path))]
 
-        [(help)
-         (if (empty? command-args)
-             (show-main-help)
-             (show-command-help (car command-args)))]
+       [(config)
+        (when (empty? post-cmd-args)
+          (printf "Error: Subcommand required for config command~n~n")
+          (printf "Usage: ar-crawl config <subcommand>~n")
+          (printf "Subcommands: init, show, validate~n")
+          (printf "Run 'ar-crawl help config' for more information.~n")
+          (exit 1))
+        (cmd-config (string->symbol (car post-cmd-args)))]
 
-        [(version)
-         (show-version)]
+       [(services)
+        (cmd-services #:verbose (verbose-mode))]
 
-        [else
-         (printf "Unknown command: ~a~n~n" command)
-         (printf "Run 'ar-crawl help' for usage information.~n")])])))
+       [(monitor)
+        (cmd-monitor #:config (config-file-path))]
+
+       [(extract)
+        (when (empty? post-cmd-args)
+          (printf "Error: Input file required for extract command~n~n")
+          (printf "Usage: ar-crawl extract <file> [options]~n")
+          (printf "       ar-crawl extract <file> --xpath-map '{...}'~n")
+          (printf "       ar-crawl extract <file> --parent \"//div\" --fields '{...}'~n")
+          (printf "Run 'ar-crawl help extract' for more information.~n")
+          (exit 1))
+        (define input-file (car post-cmd-args))
+        (parse-extract-args (cdr post-cmd-args))
+        (cmd-extract input-file
+                     #:xpath (extract-xpath-param)
+                     #:parent (extract-parent-param)
+                     #:fields (extract-fields-param)
+                     #:output (output-file-param)
+                     #:format (output-format-param)
+                     #:verbose (verbose-mode))]
+
+       [(sample)
+        (when (empty? post-cmd-args)
+          (printf "Error: Input file required for sample command~n~n")
+          (printf "Usage: ar-crawl sample <file> [--index N] [--length N]~n")
+          (exit 1))
+        (define input-file (car post-cmd-args))
+        (parse-sample-args (cdr post-cmd-args))
+        (cmd-sample input-file
+                    #:index (sample-index-param)
+                    #:length (sample-length-param))]
+
+       [(help)
+        (if (empty? post-cmd-args)
+            (show-main-help)
+            (show-command-help (car post-cmd-args)))]
+
+       [(version)
+        (show-version)]
+
+       [else
+        (printf "Unknown command: ~a~n~n" command)
+        (printf "Run 'ar-crawl help' for usage information.~n")])]))
 
 ;; Initialize global parameters
 (define verbose-mode (make-parameter #f))
@@ -833,6 +1175,8 @@
   (printf "COMMANDS~n")
   (printf "  crawl <url>         Crawl a single URL and extract content~n")
   (printf "  crawl-site <url>    Crawl an entire website following links~n")
+  (printf "  sample <file>       Show sample HTML from crawl results (to figure out XPaths)~n")
+  (printf "  extract <file>      Extract structured data from crawl results using XPath~n")
   (printf "  health              Check health status of configured services~n")
   (printf "  test [--service]    Test crawling services with a sample URL~n")
   (printf "  config <subcommand> Manage configuration files~n")
@@ -1123,12 +1467,102 @@
   (printf "  - Last update timestamp~n~n")
   (printf "Press Ctrl+C to exit the monitoring dashboard.~n~n"))
 
+;; @function{show-extract-help}
+;; @description{Show help for extract command}
+(define (show-extract-help)
+  (printf "~nEXTRACT - Extract structured data from crawl results~n")
+  (printf "=====================================================~n~n")
+  (printf "Extract specific fields from crawled HTML content using XPath expressions.~n")
+  (printf "Powered by sxml/sxpath for robust HTML parsing.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl extract <file> --xpath-map '<json>'~n")
+  (printf "  ar-crawl extract <file> --parent '<xpath>' --fields '<json>'~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  --xpath-map <json>       JSON object mapping field names to XPath expressions~n")
+  (printf "  --parent <xpath>         Parent container XPath for repeating items~n")
+  (printf "  --fields <json>          JSON object with relative XPaths (use with --parent)~n")
+  (printf "  -o, --output <file>      Output file (stdout if not specified)~n")
+  (printf "  -f, --format <fmt>       Output format: json (default), csv, sqlite~n")
+  (printf "  -v, --verbose            Show detailed progress~n~n")
+
+  (printf "EXTRACTION MODES~n~n")
+
+  (printf "  1. Simple Field Extraction (--xpath-map)~n")
+  (printf "     Extract specific fields from each page in the crawl results.~n~n")
+  (printf "     Example: Extract title and all prices~n")
+  (displayln "     ar-crawl extract results.json --xpath-map '{")
+  (displayln "       \"title\": \"//title\",")
+  (displayln "       \"prices\": \"//span[contains(@class,\\\"price\\\")]\"")
+  (displayln "     }'")
+  (newline)
+
+  (printf "  2. Item Extraction (--parent + --fields)~n")
+  (printf "     Extract repeating items like products, articles, etc.~n~n")
+  (printf "     Example: Extract all product cards~n")
+  (displayln "     ar-crawl extract results.json \\")
+  (displayln "       --parent \"//div[contains(@class,'product')]\" \\")
+  (displayln "       --fields '{")
+  (displayln "         \"name\": \".//h2\",")
+  (displayln "         \"price\": \".//span[@class=\\\"price\\\"]\",")
+  (displayln "         \"link\": \".//a/@href\"")
+  (displayln "       }'")
+  (newline)
+
+  (printf "XPATH TIPS~n")
+  (printf "  //tag                    Select all <tag> elements~n")
+  (printf "  //tag[@class='x']        Select by class attribute~n")
+  (printf "  //tag[contains(@class,'x')]  Class contains 'x'~n")
+  (printf "  //tag/text()             Get text content~n")
+  (printf "  //tag/@href              Get attribute value~n")
+  (printf "  .//tag                   Relative to parent (for --fields)~n~n")
+
+  (printf "EXAMPLES~n~n")
+
+  (printf "  # Extract product data from Pick 'n Save crawl~n")
+  (displayln "  ar-crawl extract pns-products.json \\")
+  (displayln "    --parent \"//div[contains(@data-testid,'ProductCard')]\" \\")
+  (displayln "    --fields '{\"name\": \".//h2\", \"price\": \".//span\"}' \\")
+  (displayln "    -o products.csv -f csv")
+  (newline)
+
+  (printf "  # Extract all links and images~n")
+  (displayln "  ar-crawl extract page.json \\")
+  (displayln "    --xpath-map '{\"links\": \"//a/@href\", \"images\": \"//img/@src\"}'")
+  (newline))
+
+;; @function{show-sample-help}
+;; @description{Show help for sample command}
+(define (show-sample-help)
+  (printf "~nSAMPLE - View HTML from crawl results~n")
+  (printf "======================================~n~n")
+  (printf "Show sample HTML content from a crawl results file to help~n")
+  (printf "figure out the right XPath expressions for data extraction.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl sample <file> [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  --index N      Index of page to show (default: 0)~n")
+  (printf "  --length N     Max length of HTML to display (default: 5000)~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Show first page from crawl results~n")
+  (printf "  ar-crawl sample results.json~n~n")
+  (printf "  # Show third page (index 2)~n")
+  (printf "  ar-crawl sample results.json --index 2~n~n")
+  (printf "  # Show more HTML content~n")
+  (printf "  ar-crawl sample results.json --length 10000~n~n"))
+
 ;; @function{show-command-help}
 ;; @description{Show help for a specific command}
 (define (show-command-help command)
   (case (if (string? command) (string->symbol command) command)
     [(crawl) (show-crawl-help)]
     [(crawl-site) (show-crawl-site-help)]
+    [(extract) (show-extract-help)]
+    [(sample) (show-sample-help)]
     [(health) (show-health-help)]
     [(test) (show-test-help)]
     [(config) (show-config-help)]
@@ -1136,7 +1570,7 @@
     [(monitor) (show-monitor-help)]
     [else
      (printf "Unknown command: ~a~n~n" command)
-     (printf "Available commands: crawl, crawl-site, health, test, config, services, monitor~n")
+     (printf "Available commands: crawl, crawl-site, extract, sample, health, test, config, services, monitor~n")
      (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters
@@ -1148,6 +1582,15 @@
 (define output-file-param (make-parameter #f))
 (define output-format-param (make-parameter 'json))
 (define xpath-filter-param (make-parameter #f))
+
+;; Extract command parameters
+(define extract-xpath-param (make-parameter #f))
+(define extract-parent-param (make-parameter #f))
+(define extract-fields-param (make-parameter #f))
+
+;; Sample command parameters
+(define sample-index-param (make-parameter 0))
+(define sample-length-param (make-parameter 5000))
 
 ;; Run main if this file is executed directly
 (module+ main
