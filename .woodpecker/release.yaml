@@ -10,7 +10,7 @@ steps:
       - apt-get update --allow-releaseinfo-change && apt-get install -y zip build-essential libffi-dev curl gcc g++ make autoconf libtool
 
       # Install Racket packages
-      - raco pkg install --auto html-parsing uuid gregor http123 sxml
+      - raco pkg install --auto html-parsing uuid gregor http123 sxml csv-writing
 
       # Create directories
       - mkdir -p dist
@@ -55,7 +55,7 @@ steps:
 
           # Install project dependencies
           echo "Installing project dependencies..."
-          if timeout 8m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc pkg install --auto html-parsing uuid gregor http123 sxml; then
+          if timeout 8m raco cross --workspace /tmp/macos-x86_64 --host x86_64-linux --target x86_64-macosx --version 8.16 --vm bc pkg install --auto html-parsing uuid gregor http123 sxml csv-writing; then
             echo "Successfully installed dependencies for macOS x86_64"
 
             # Clean compiled files again
@@ -113,7 +113,7 @@ steps:
 
             # Install project dependencies
             echo "Installing project dependencies..."
-            if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs pkg install --auto html-parsing uuid gregor http123 sxml; then
+            if timeout 8m raco cross --workspace /tmp/macos-arm64-cs --host x86_64-linux --target aarch64-macosx --version 8.16 --vm cs pkg install --auto html-parsing uuid gregor http123 sxml csv-writing; then
               echo "Successfully installed dependencies for macOS ARM64"
 
               # Work in the clean directory

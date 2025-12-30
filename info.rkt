@@ -6,5 +6,6 @@
                "uuid"
                "gregor"
                "http123"
-               "sxml"))
+               "sxml"
+               "csv-writing"))
 (define build-deps '("rackunit-lib"))
