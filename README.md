@@ -16,6 +16,7 @@ A robust, production-ready web crawler with service fallbacks and **comprehensiv
 - **Production Ready**: Docker support, monitoring, health checks, and logging
 - **CLI Interface**: Easy-to-use command-line tool with extensive options
 - **Multiple Output Formats**: JSON, CSV, Markdown, and SQLite database export capabilities with full SQL querying support
+- **XPath Data Extraction**: Extract structured data from crawl results using XPath expressions
 - **Configuration Management**: Flexible JSON-based configuration with environment variable support
 - **Real-time Monitoring**: Built-in dashboard and metrics collection
 
@@ -128,21 +129,51 @@ make run ARGS='test --verbose'
 
 - **`crawl-site <url>`** - Crawl an entire site with link following
   ```bash
-  # Basic site crawl  
+  # Basic site crawl
   ar-crawl crawl-site https://example.com
-  
+
   # Advanced site crawl with options
   ar-crawl --verbose --output output/results.json \
     crawl-site https://example.com \
     --max-pages 100 \
     --url-pattern ".*blog.*" \
     --crawl-delay 2000
-  
+
   # Save site crawl to SQLite for advanced analysis
   ar-crawl --output site-data.db --format sqlite \
     crawl-site https://example.com \
     --max-pages 50 \
     --url-pattern ".*blog.*"
+  ```
+
+- **`sample <file>`** - Show sample HTML from crawl results to help figure out XPaths
+  ```bash
+  # Show first result (default 5000 chars)
+  ar-crawl sample results.json
+
+  # Show specific result by index
+  ar-crawl sample results.json --index 2
+
+  # Show more content
+  ar-crawl sample results.json --length 10000
+  ```
+
+- **`extract <file>`** - Extract structured data from crawl results using XPath
+  ```bash
+  # Simple field extraction with xpath-map
+  ar-crawl extract results.json --xpath-map '{
+    "title": "//h1",
+    "price": "//span[@class=\"price\"]"
+  }'
+
+  # Item extraction (multiple items per page)
+  ar-crawl extract results.json \
+    --parent "//div[@class='product']" \
+    --fields '{"name": ".//h2", "price": ".//span[@class=\"price\"]"}'
+
+  # Save extracted data to CSV
+  ar-crawl --output extracted.csv --format csv \
+    extract results.json --xpath-map '{"title": "//h1"}'
   ```
 
 - **`health`** - Check service health status
@@ -199,6 +230,15 @@ make run ARGS='test --verbose'
 - **`--url-pattern <regex>`** - URL regex filter (default: ".*")
 - **`--allow-external`** - Allow crawling external domains
 - **`--crawl-delay <ms>`** - Delay between requests in ms (default: 1000)
+
+#### Sample Command Options
+- **`--index <num>`** - Index of result to show (default: 0)
+- **`--length <num>`** - Maximum characters to display (default: 5000)
+
+#### Extract Command Options
+- **`--xpath-map <json>`** - JSON object mapping field names to XPath expressions
+- **`--parent <xpath>`** - Parent XPath for item extraction (use with --fields)
+- **`--fields <json>`** - JSON object mapping field names to relative XPaths (use with --parent)
 
 **⚠️ Important:** Global options like `--verbose`, `--output` must come **before** the command name:
 ```bash
@@ -499,6 +539,122 @@ library(RSQLite)
 con <- dbConnect(RSQLite::SQLite(), "crawl-data.db")
 pages <- dbGetQuery(con, "SELECT * FROM crawled_pages")
 summary(pages$content_length)
+```
+
+## Data Extraction
+
+AR-Crawl provides a two-step workflow for structured data extraction: first crawl pages, then extract data using XPath expressions.
+
+### Extraction Workflow
+
+```bash
+# Step 1: Crawl the site and save results
+ar-crawl --output products.json crawl-site https://shop.example.com \
+  --url-pattern ".*product.*" --max-pages 50
+
+# Step 2: Explore the HTML structure
+ar-crawl sample products.json
+
+# Step 3: Extract structured data using XPath
+ar-crawl --output extracted.csv --format csv \
+  extract products.json \
+  --parent "//div[@class='product']" \
+  --fields '{"name": ".//h2", "price": ".//span[@class=\"price\"]"}'
+```
+
+### Sample Command
+
+Use `sample` to inspect HTML content and figure out the right XPath expressions:
+
+```bash
+# Show first page's HTML (default 5000 chars)
+ar-crawl sample results.json
+
+# Show a specific page by index
+ar-crawl sample results.json --index 3
+
+# Show more content for complex pages
+ar-crawl sample results.json --length 15000
+```
+
+The sample output includes the source URL and suggests how to use the `extract` command.
+
+### Extract Command
+
+Two extraction modes are available:
+
+#### Simple Field Extraction
+
+Use `--xpath-map` to extract single values per page:
+
+```bash
+ar-crawl extract results.json --xpath-map '{
+  "title": "//h1",
+  "author": "//span[@class=\"author\"]",
+  "date": "//time/@datetime"
+}'
+```
+
+#### Item Extraction (Multiple Items Per Page)
+
+Use `--parent` with `--fields` to extract repeating items like product listings:
+
+```bash
+ar-crawl extract results.json \
+  --parent "//div[@class='product-card']" \
+  --fields '{
+    "name": ".//h2/text()",
+    "price": ".//span[@class=\"price\"]/text()",
+    "link": ".//a/@href"
+  }'
+```
+
+### Output Formats
+
+```bash
+# JSON output (default)
+ar-crawl --output data.json extract results.json --xpath-map '...'
+
+# CSV for spreadsheets
+ar-crawl --output data.csv --format csv extract results.json --xpath-map '...'
+
+# SQLite for analysis
+ar-crawl --output data.db --format sqlite extract results.json --xpath-map '...'
+```
+
+### Real-World Extraction Examples
+
+#### E-commerce Product Extraction
+```bash
+# Crawl product pages
+ar-crawl --output shop.json crawl-site https://shop.example.com \
+  --url-pattern ".*product.*" --max-pages 100
+
+# Extract product data
+ar-crawl --output products.csv --format csv \
+  extract shop.json \
+  --parent "//div[@class='product']" \
+  --fields '{
+    "name": ".//h2[@class=\"title\"]/text()",
+    "price": ".//span[@class=\"price\"]/text()",
+    "sku": ".//span[@class=\"sku\"]/text()"
+  }'
+```
+
+#### News Article Extraction
+```bash
+# Crawl news articles
+ar-crawl --output news.json crawl-site https://news.example.com \
+  --url-pattern ".*/article/.*" --max-pages 50
+
+# Extract article metadata
+ar-crawl --output articles.json \
+  extract news.json --xpath-map '{
+    "headline": "//h1",
+    "author": "//span[@class=\"byline\"]",
+    "published": "//time/@datetime",
+    "summary": "//p[@class=\"lead\"]"
+  }'
 ```
 
 ### Crawling Best Practices
