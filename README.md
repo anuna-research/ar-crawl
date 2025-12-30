@@ -7,6 +7,7 @@ A robust, production-ready web crawler with service fallbacks and **comprehensiv
 - **🆓 No API Keys Required**: Built-in direct HTTP service works immediately
 - **🕷️ Site-Wide Crawling**: Intelligent link discovery and following with regex filtering
 - **🎭 Local Playwright Integration**: Built-in browser rendering for JavaScript-heavy sites (auto-spawns)
+- **📊 Page Load Probing**: Measure JS load times and get recommended scraping parameters
 - **Multi-Service Support**: Integrates with FireCrawl, ScrapingBee, Browserless, and ScraperAPI
 - **Automatic Fallbacks**: Seamless failover between services when one fails
 - **URL Filtering**: Advanced regex-based URL pattern matching and domain restrictions
@@ -144,6 +145,18 @@ make run ARGS='test --verbose'
     crawl-site https://example.com \
     --max-pages 50 \
     --url-pattern ".*blog.*"
+  ```
+
+- **`probe <url>`** - Measure page load performance to determine optimal scraping parameters
+  ```bash
+  # Basic probe
+  ar-crawl probe https://example.com
+
+  # Verbose probe with detailed timing breakdown
+  ar-crawl probe https://spa-site.com -v
+
+  # Save probe results to file
+  ar-crawl probe https://example.com -o probe-results.json
   ```
 
 - **`sample <file>`** - Show sample HTML from crawl results to help figure out XPaths
@@ -540,6 +553,95 @@ con <- dbConnect(RSQLite::SQLite(), "crawl-data.db")
 pages <- dbGetQuery(con, "SELECT * FROM crawled_pages")
 summary(pages$content_length)
 ```
+
+## Page Load Probing
+
+Before scraping JavaScript-heavy sites, use the `probe` command to measure page load performance and get recommended scraping parameters. This helps you determine optimal `--pw-delay`, `--pw-scroll-delay`, and `--timeout` values.
+
+### Basic Usage
+
+```bash
+# Probe a URL to see timing metrics
+ar-crawl probe https://example.com
+
+# Verbose mode shows detailed breakdown
+ar-crawl probe https://spa-site.com -v
+
+# Save results for later reference
+ar-crawl probe https://example.com -o probe-results.json
+```
+
+### Metrics Measured
+
+| Metric | Description |
+|--------|-------------|
+| DOM Content Loaded | Time until DOMContentLoaded event fires |
+| Page Load Complete | Time until load event fires |
+| Network Idle | Time until no network activity for 500ms |
+| JS Execution (est) | Estimated JavaScript execution time |
+| TTFB | Time to first byte |
+| Total Requests | Number of network requests |
+| Transfer Size | Total data transferred |
+
+### Example Output
+
+```
+=== Page Load Metrics ===
+
+Timing:
+  DOM Content Loaded: 895 ms
+  Page Load Complete: 2968 ms
+  Network Idle:       6299 ms
+  JS Execution (est): 2073 ms
+
+Resources:
+  Total Requests:     250
+  Total Transfer:     2400 KB
+
+=== Recommended Scraping Parameters ===
+
+  --pw-delay 8500        # Wait for JS to complete
+  --pw-scroll-delay 2500 # Delay between scrolls
+  --timeout 30000        # Request timeout
+
+Probe completed in 6386 ms
+```
+
+### Verbose Mode Details
+
+With `-v`, you get additional performance metrics:
+
+```bash
+ar-crawl probe https://example.com -v
+```
+
+Shows:
+- **TTFB** - Time to first byte from server
+- **DOM Parsing** - Time spent parsing the DOM
+- **DOM Interactive** - When DOM becomes interactive
+- **DOM Complete** - When DOM is fully loaded
+- **Resource breakdown** - Requests and transfer size by type (scripts, images, etc.)
+
+### Using Probe Results
+
+After probing, apply the recommended parameters to your crawl:
+
+```bash
+# 1. Probe the site first
+ar-crawl probe https://spa-site.com -v
+
+# 2. Use recommended values for crawling
+ar-crawl -s playwright crawl https://spa-site.com \
+  --pw-delay 8500 \
+  --pw-scroll-delay 2500
+```
+
+### Probe Options
+
+| Option | Description |
+|--------|-------------|
+| `-v, --verbose` | Show detailed timing breakdown and resource metrics |
+| `-o, --output FILE` | Save probe results to JSON file |
 
 ## Data Extraction
 
