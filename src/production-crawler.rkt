@@ -496,4 +496,198 @@
     (define config (make-production-crawler-config))
     (define crawler (create-production-crawler config))
     (define health (health-check crawler))
+    (check-true (health-status? health)))
+
+  ;; Configuration Tests
+  (test-case "Configuration with custom services"
+    (define config (make-production-crawler-config
+                    #:services '(direct firecrawl)
+                    #:fallback-enabled #f))
+    (check-equal? (crawler-config-services config) '(direct firecrawl))
+    (check-false (crawler-config-fallback-enabled config)))
+
+  (test-case "Configuration with rate limits"
+    (define config (make-production-crawler-config
+                    #:rate-limit-ms 500
+                    #:timeout-ms 60000
+                    #:retry-attempts 5))
+    (check-equal? (crawler-config-rate-limit-ms config) 500)
+    (check-equal? (crawler-config-timeout-ms config) 60000)
+    (check-equal? (crawler-config-retry-attempts config) 5))
+
+  (test-case "Configuration with monitoring disabled"
+    (define config (make-production-crawler-config
+                    #:enable-monitoring #f))
+    (check-false (crawler-config-enable-monitoring config)))
+
+  (test-case "Configuration with service configs"
+    (define service-cfg (hash 'firecrawl (hash 'api-key "test-key")))
+    (define config (make-production-crawler-config
+                    #:service-configs service-cfg))
+    (check-equal? (crawler-config-service-configs config) service-cfg))
+
+  (test-case "Configuration with log level"
+    (define config (make-production-crawler-config
+                    #:log-level 'debug
+                    #:output-format 'csv))
+    (check-equal? (crawler-config-log-level config) 'debug)
+    (check-equal? (crawler-config-output-format config) 'csv))
+
+  ;; Crawler Creation Tests
+  (test-case "Crawler without monitoring"
+    (define config (make-production-crawler-config #:enable-monitoring #f))
+    (define crawler (create-production-crawler config))
+    (check-true (production-crawler? crawler))
+    (check-false (production-crawler-metrics-collector crawler)))
+
+  (test-case "Crawler with monitoring"
+    (define config (make-production-crawler-config #:enable-monitoring #t))
+    (define crawler (create-production-crawler config))
+    (check-true (production-crawler? crawler))
+    (check-true (hash? (production-crawler-metrics-collector crawler))))
+
+  (test-case "Crawler initial state"
+    (define config (make-production-crawler-config))
+    (define crawler (create-production-crawler config))
+    (check-equal? (hash-count (production-crawler-active-jobs crawler)) 0)
+    (check-equal? (hash-count (production-crawler-completed-jobs crawler)) 0)
+    (check-equal? (production-crawler-job-counter crawler) 0))
+
+  ;; Metrics Collector Tests
+  (test-case "Metrics collector initialization"
+    (define metrics (make-metrics-collector))
+    (check-equal? (hash-ref metrics 'requests-total) 0)
+    (check-equal? (hash-ref metrics 'requests-successful) 0)
+    (check-equal? (hash-ref metrics 'requests-failed) 0)
+    (check-equal? (hash-ref metrics 'response-times) '())
+    (check-true (hash? (hash-ref metrics 'services-used)))
+    (check-true (number? (hash-ref metrics 'start-time))))
+
+  (test-case "Record request metrics - success"
+    (define metrics (make-metrics-collector))
+    (record-request-metrics metrics (hash 'content "test") 100)
+    (check-equal? (hash-ref metrics 'requests-total) 1)
+    (check-equal? (hash-ref metrics 'requests-successful) 1)
+    (check-equal? (hash-ref metrics 'requests-failed) 0)
+    (check-equal? (hash-ref metrics 'response-times) '(100)))
+
+  (test-case "Record request metrics - failure"
+    (define metrics (make-metrics-collector))
+    (record-request-metrics metrics #f 50)
+    (check-equal? (hash-ref metrics 'requests-total) 1)
+    (check-equal? (hash-ref metrics 'requests-successful) 0)
+    (check-equal? (hash-ref metrics 'requests-failed) 1))
+
+  (test-case "Record multiple requests"
+    (define metrics (make-metrics-collector))
+    (record-request-metrics metrics (hash 'content "a") 100)
+    (record-request-metrics metrics (hash 'content "b") 200)
+    (record-request-metrics metrics #f 50)
+    (check-equal? (hash-ref metrics 'requests-total) 3)
+    (check-equal? (hash-ref metrics 'requests-successful) 2)
+    (check-equal? (hash-ref metrics 'requests-failed) 1)
+    (check-equal? (length (hash-ref metrics 'response-times)) 3))
+
+  (test-case "Get current metrics"
+    (define metrics (make-metrics-collector))
+    (record-request-metrics metrics (hash 'content "test") 100)
+    (record-request-metrics metrics (hash 'content "test") 300)
+    (define current (get-current-metrics metrics))
+    (check-true (crawler-metrics? current))
+    (check-equal? (crawler-metrics-requests-total current) 2)
+    (check-equal? (crawler-metrics-requests-successful current) 2)
+    (check-equal? (crawler-metrics-average-response-time current) 200))
+
+  (test-case "Get current metrics - empty"
+    (define metrics (make-metrics-collector))
+    (define current (get-current-metrics metrics))
+    (check-equal? (crawler-metrics-requests-total current) 0)
+    (check-equal? (crawler-metrics-average-response-time current) 0))
+
+  ;; Get Crawler Metrics Tests
+  (test-case "Get crawler metrics with collector"
+    (define config (make-production-crawler-config #:enable-monitoring #t))
+    (define crawler (create-production-crawler config))
+    (define metrics (get-crawler-metrics crawler))
+    (check-true (crawler-metrics? metrics)))
+
+  (test-case "Get crawler metrics without collector"
+    (define config (make-production-crawler-config #:enable-monitoring #f))
+    (define crawler (create-production-crawler config))
+    (define metrics (get-crawler-metrics crawler))
+    (check-true (crawler-metrics? metrics))
+    (check-equal? (crawler-metrics-requests-total metrics) 0))
+
+  ;; Crawler Status Tests
+  (test-case "Get crawler status - initial"
+    (define config (make-production-crawler-config))
+    (define crawler (create-production-crawler config))
+    (define status (get-crawler-status crawler))
+    (check-true (crawler-status? status))
+    (check-equal? (crawler-status-active-jobs status) 0)
+    (check-equal? (crawler-status-total-jobs status) 0))
+
+  (test-case "Crawler status accessors"
+    (define status (crawler-status 5 10 0.8 150 "Some error"))
+    (check-equal? (crawler-status-active-jobs status) 5)
+    (check-equal? (crawler-status-total-jobs status) 10)
+    (check-equal? (crawler-status-success-rate status) 0.8)
+    (check-equal? (crawler-status-average-response-time status) 150)
+    (check-equal? (crawler-status-last-error status) "Some error"))
+
+  ;; Health Status Tests
+  (test-case "Health status accessors"
+    (define hs (health-status 'healthy (hash 'direct #t) 3600 1234567890))
+    (check-equal? (health-status-status hs) 'healthy)
+    (check-equal? (health-status-services hs) (hash 'direct #t))
+    (check-equal? (health-status-uptime hs) 3600)
+    (check-equal? (health-status-last-check hs) 1234567890))
+
+  ;; Job Manager Tests
+  (test-case "Make job manager"
+    (define config (make-production-crawler-config))
+    (define logger (make-logger 'test))
+    (define jm (make-job-manager config logger))
+    (check-true (hash? jm))
+    (check-equal? (hash-ref jm 'config) config))
+
+  ;; Get Last Error Tests
+  (test-case "Get last error - no jobs"
+    (define config (make-production-crawler-config))
+    (define crawler (create-production-crawler config))
+    (check-false (get-last-error crawler)))
+
+  ;; Stop Crawling Tests
+  (test-case "Stop crawling - nonexistent job"
+    (define config (make-production-crawler-config))
+    (define crawler (create-production-crawler config))
+    (check-false (stop-crawling crawler "nonexistent-job-id")))
+
+  ;; Get Job Results Tests
+  (test-case "Get job results - nonexistent"
+    (define config (make-production-crawler-config))
+    (define crawler (create-production-crawler config))
+    (check-false (get-job-results crawler "nonexistent-job-id")))
+
+  ;; Crawler Job Struct Tests
+  (test-case "Crawler job struct"
+    (define job (crawler-job "test-id" "http://test.com"
+                            (make-production-crawler-config)
+                            'pending 0 #f #f '() 0))
+    (check-equal? (crawler-job-id job) "test-id")
+    (check-equal? (crawler-job-url job) "http://test.com")
+    (check-equal? (crawler-job-status job) 'pending)
+    (set-crawler-job-status! job 'running)
+    (check-equal? (crawler-job-status job) 'running))
+
+  ;; Health Status Determination
+  (test-case "Health status with mock service"
+    ;; Register a mock service that always succeeds
+    (register-service 'test-health-service
+                      (lambda (url config)
+                        (hash 'content "healthy" 'status 200)))
+    (define config (make-production-crawler-config
+                    #:services '(test-health-service)))
+    (define crawler (create-production-crawler config))
+    (define health (health-check crawler))
     (check-true (health-status? health))))

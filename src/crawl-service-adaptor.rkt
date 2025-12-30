@@ -656,17 +656,197 @@
 
 (module+ test
   (require rackunit)
-  
+
+  ;; Service Registration Tests
   (test-case "Service registration"
     (register-service 'test-service (lambda (url config) "test"))
     (check-not-false (member 'test-service (get-available-services))))
-  
-  (test-case "Response normalization"
+
+  (test-case "Get available services includes defaults"
+    (define services (get-available-services))
+    (check-not-false (member 'direct services))
+    (check-not-false (member 'firecrawl services)))
+
+  ;; Response Normalization Tests
+  (test-case "Response normalization - string input"
     (define response (normalize-response "test content"))
     (check-equal? (hash-ref response 'content) "test content")
+    (check-equal? (hash-ref response 'url) "")
+    (check-equal? (hash-ref response 'title) "")
+    (check-equal? (hash-ref response 'links) '())
     (check-true (hash-has-key? response 'timestamp)))
-  
+
+  (test-case "Response normalization - hash input"
+    (define input (hash 'content "html" 'url "http://test.com" 'title "Test"))
+    (define response (normalize-response input))
+    (check-equal? (hash-ref response 'content) "html")
+    (check-equal? (hash-ref response 'url) "http://test.com")
+    (check-equal? (hash-ref response 'title) "Test"))
+
+  (test-case "Response normalization - hash with all fields"
+    (define input (hash 'content "<html>"
+                        'url "http://example.com"
+                        'title "Example"
+                        'links '("http://a.com" "http://b.com")
+                        'metadata (hash 'key "value")))
+    (define response (normalize-response input))
+    (check-equal? (hash-ref response 'links) '("http://a.com" "http://b.com"))
+    (check-equal? (hash-ref (hash-ref response 'metadata) 'key) "value"))
+
+  (test-case "Response normalization - non-standard input"
+    (define response (normalize-response 123))
+    (check-equal? (hash-ref response 'content) "")
+    (check-true (hash? response)))
+
+  (test-case "Response normalization - null/false input"
+    (define response (normalize-response #f))
+    (check-equal? (hash-ref response 'content) ""))
+
+  ;; Content Extraction Tests
   (test-case "Content extraction"
     (define response (hash 'content "hello world" 'links '("http://test.com")))
     (check-equal? (extract-content response) "hello world")
-    (check-equal? (extract-links response) '("http://test.com"))))
+    (check-equal? (extract-links response) '("http://test.com")))
+
+  (test-case "Extract content - missing key"
+    (check-equal? (extract-content (hash)) ""))
+
+  (test-case "Extract links - missing key"
+    (check-equal? (extract-links (hash 'content "test")) '()))
+
+  (test-case "Extract metadata"
+    (define response (hash 'metadata (hash 'method "GET" 'status 200)))
+    (define meta (extract-metadata response))
+    (check-equal? (hash-ref meta 'method) "GET")
+    (check-equal? (hash-ref meta 'status) 200))
+
+  (test-case "Extract metadata - missing"
+    (check-equal? (extract-metadata (hash)) (hash)))
+
+  ;; XPath Filtering Tests
+  (test-case "filter-content-by-xpath basic"
+    (define html "<html><body><p>Hello</p><p>World</p></body></html>")
+    (define result (filter-content-by-xpath html "//p"))
+    (check-true (string-contains? result "Hello"))
+    (check-true (string-contains? result "World")))
+
+  (test-case "filter-content-by-xpath - empty xpath"
+    (define html "<html><body>test</body></html>")
+    (check-equal? (filter-content-by-xpath html "") html)
+    (check-equal? (filter-content-by-xpath html #f) html))
+
+  (test-case "filter-content-by-xpath - no matches"
+    (define html "<html><body><p>test</p></body></html>")
+    (define result (filter-content-by-xpath html "//div"))
+    (check-equal? result ""))
+
+  (test-case "filter-content-by-xpath - nested content"
+    (define html "<html><body><div><span>nested</span></div></body></html>")
+    (define result (filter-content-by-xpath html "//div"))
+    (check-true (string-contains? result "nested")))
+
+  ;; extract-text-from-sxml Tests
+  (test-case "extract-text-from-sxml - string"
+    (check-equal? (extract-text-from-sxml "hello") "hello"))
+
+  (test-case "extract-text-from-sxml - simple element"
+    (define sxml '(p "hello" " " "world"))
+    (check-true (string-contains? (extract-text-from-sxml sxml) "hello"))
+    (check-true (string-contains? (extract-text-from-sxml sxml) "world")))
+
+  (test-case "extract-text-from-sxml - nested"
+    (define sxml '(div (p "text") (span "more")))
+    (define result (extract-text-from-sxml sxml))
+    (check-true (string-contains? result "text"))
+    (check-true (string-contains? result "more")))
+
+  (test-case "extract-text-from-sxml - non-string"
+    (check-equal? (extract-text-from-sxml 123) ""))
+
+  ;; apply-xpath-to-response Tests
+  (test-case "apply-xpath-to-response"
+    (define response (hash 'content "<html><p>filtered</p></html>" 'url "http://test.com"))
+    (define result (apply-xpath-to-response response "//p"))
+    (check-true (string-contains? (hash-ref result 'content) "filtered"))
+    (check-equal? (hash-ref result 'url) "http://test.com"))
+
+  (test-case "apply-xpath-to-response - empty xpath"
+    (define response (hash 'content "original"))
+    (check-equal? (apply-xpath-to-response response "") response)
+    (check-equal? (apply-xpath-to-response response #f) response))
+
+  ;; Link Normalization Tests
+  (test-case "normalize-link - absolute http"
+    (check-equal? (normalize-link "http://example.com/page" "http://base.com")
+                  "http://example.com/page"))
+
+  (test-case "normalize-link - absolute https"
+    (check-equal? (normalize-link "https://example.com/page" "http://base.com")
+                  "https://example.com/page"))
+
+  (test-case "normalize-link - protocol relative"
+    (define result (normalize-link "//cdn.example.com/script.js" "https://base.com"))
+    (check-true (string-contains? result "cdn.example.com")))
+
+  ;; valid-http-url? Tests
+  (test-case "valid-http-url? - valid http"
+    (check-true (valid-http-url? "http://example.com")))
+
+  (test-case "valid-http-url? - valid https"
+    (check-true (valid-http-url? "https://example.com/path")))
+
+  (test-case "valid-http-url? - invalid"
+    (check-false (valid-http-url? "not-a-url"))
+    (check-false (valid-http-url? "ftp://example.com"))
+    (check-false (valid-http-url? "")))
+
+  ;; extract-title Tests
+  (test-case "extract-title - with title"
+    (define html '(*TOP* (html (head (title "Page Title")))))
+    (check-equal? (extract-title html) "Page Title"))
+
+  (test-case "extract-title - no title"
+    (define html '(*TOP* (html (body "content"))))
+    (check-equal? (extract-title html) ""))
+
+  ;; extract-page-links Tests
+  (test-case "extract-page-links - basic"
+    (define html '(*TOP* (html (body (a (@ (href "http://a.com")) "A")
+                                     (a (@ (href "http://b.com")) "B")))))
+    (define links (extract-page-links html "http://base.com"))
+    (check-equal? (length links) 2))
+
+  (test-case "extract-page-links - filters duplicates"
+    (define html '(*TOP* (html (body (a (@ (href "http://a.com")) "A1")
+                                     (a (@ (href "http://a.com")) "A2")))))
+    (define links (extract-page-links html "http://base.com"))
+    (check-equal? (length links) 1))
+
+  (test-case "extract-page-links - empty"
+    (define html '(*TOP* (html (body "no links"))))
+    (check-equal? (extract-page-links html "http://base.com") '()))
+
+  ;; Timestamp Tests
+  (test-case "generate-timestamp format"
+    (define ts (generate-timestamp))
+    (check-true (string? ts))
+    (check-true (regexp-match? #px"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z" ts)))
+
+  (test-case "generate-direct-timestamp format"
+    (define ts (generate-direct-timestamp))
+    (check-true (string? ts))
+    (check-true (regexp-match? #px"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z" ts)))
+
+  ;; call-service Tests (with registered test service)
+  (test-case "call-service with mock service"
+    (register-service 'mock-service
+                      (lambda (url config)
+                        (hash 'content (format "mocked: ~a" url)
+                              'url url)))
+    (define result (call-service 'mock-service "http://test.com" (hash)))
+    (check-true (hash? result))
+    (check-true (string-contains? (hash-ref result 'content "") "mocked")))
+
+  (test-case "call-service - unregistered service"
+    (define result (call-service 'nonexistent-service "http://test.com" (hash)))
+    (check-false result)))
