@@ -38,8 +38,24 @@
 ;; @function{get-playwright-service-dir}
 ;; @description{Get the playwright-service directory path}
 (define (get-playwright-service-dir)
-  (define script-dir (path-only (path->complete-path (find-system-path 'run-file))))
-  (simplify-path (build-path script-dir ".." "playwright-service")))
+  ;; Check environment variable first
+  (define env-dir (getenv "PLAYWRIGHT_SERVICE_DIR"))
+  (cond
+    [(and env-dir (directory-exists? env-dir)) env-dir]
+    [else
+     ;; Try relative to executable
+     (define script-dir (path-only (path->complete-path (find-system-path 'run-file))))
+     (define candidates
+       (list
+        ;; For dist/ar-crawl binary: go up twice to reach repo root
+        (simplify-path (build-path script-dir ".." ".." "playwright-service"))
+        ;; For racket src/cli.rkt: go up once
+        (simplify-path (build-path script-dir ".." "playwright-service"))
+        ;; Current working directory
+        (simplify-path (build-path (current-directory) "playwright-service"))))
+     (or (findf directory-exists? candidates)
+         ;; Default to first candidate (will fail with helpful error)
+         (car candidates))]))
 
 ;; @function{playwright-service-installed?}
 ;; @description{Check if playwright service dependencies are installed}
