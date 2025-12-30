@@ -1,5 +1,9 @@
 const http = require('http');
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+
+// Add stealth plugin to avoid bot detection
+chromium.use(StealthPlugin());
 
 const PORT = process.env.PLAYWRIGHT_SERVICE_PORT || 3033;
 
@@ -9,9 +13,14 @@ async function initBrowser() {
   if (!browser) {
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process'
+      ]
     });
-    console.log('Browser initialized');
+    console.log('Browser initialized with stealth mode');
   }
   return browser;
 }
@@ -28,7 +37,7 @@ async function fetchPage(options) {
     clickSelector = null,  // CSS selector to click (e.g., "Load More" button)
     clickCount = 1,  // Number of times to click
     viewport = { width: 1920, height: 1080 },
-    userAgent = 'AR-Crawl/1.0 Playwright (+https://github.com/anuna-research/ar-crawl)',
+    userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     blockResources = [],
     extractLinks = true
   } = options;
