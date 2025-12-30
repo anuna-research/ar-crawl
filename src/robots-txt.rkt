@@ -344,62 +344,220 @@
   (hash-set! cache cache-key 
              (cons robots (current-milliseconds))))
 
-;; Utility Functions
-;; -----------------
-
-;; @function{string-trim}
-;; @description{Trim whitespace from string}
-(define (string-trim str)
-  (define trimmed-left (regexp-replace #rx"^\\s+" str ""))
-  (regexp-replace #rx"\\s+$" trimmed-left ""))
-
-;; @function{string-prefix?}
-;; @description{Check if string has prefix}
-(define (string-prefix? str prefix)
-  (and (>= (string-length str) (string-length prefix))
-       (string=? (substring str 0 (string-length prefix)) prefix)))
-
-;; @function{string-suffix?}
-;; @description{Check if string has suffix}
-(define (string-suffix? str suffix)
-  (and (>= (string-length str) (string-length suffix))
-       (string=? (substring str (- (string-length str) (string-length suffix))) suffix)))
-
-;; @function{string-contains?}
-;; @description{Check if string contains substring}
-(define (string-contains? str substr)
-  (regexp-match? (regexp-quote substr) str))
-
 ;; Unit Tests
 ;; ----------
 
 (module+ test
   (require rackunit)
-  
+
+  ;; robots.txt URL generation tests
   (test-case "robots.txt URL generation"
     (check-equal? (robots-txt-url "https://example.com/path")
                   "https://example.com/robots.txt")
     (check-equal? (robots-txt-url "http://example.com:8080")
-                  "http://example.com:8080/robots.txt"))
-  
+                  "http://example.com:8080/robots.txt")
+    (check-equal? (robots-txt-url "https://example.com:443/deep/path")
+                  "https://example.com:443/robots.txt")
+    (check-equal? (robots-txt-url "http://example.com")
+                  "http://example.com/robots.txt"))
+
+  ;; Path normalization tests
   (test-case "Path normalization"
     (check-equal? (normalize-path "") "/")
     (check-equal? (normalize-path "path") "/path")
-    (check-equal? (normalize-path "/path") "/path"))
-  
-  (test-case "robots.txt parsing"
+    (check-equal? (normalize-path "/path") "/path")
+    (check-equal? (normalize-path "/path/to/resource") "/path/to/resource")
+    (check-equal? (normalize-path "path/to/resource") "/path/to/resource"))
+
+  ;; Basic robots.txt parsing tests
+  (test-case "robots.txt parsing - basic"
     (define sample-content
       "User-agent: *\nDisallow: /private/\nAllow: /public/\nCrawl-delay: 1\nSitemap: https://example.com/sitemap.xml")
-    
+
     (define robots (parse-robots-txt sample-content "example.com"))
     (check-true (robots-txt? robots))
     (check-equal? (length (robots-txt-rules robots)) 1)
-    (check-equal? (robots-txt-sitemap-urls robots) '("https://example.com/sitemap.xml")))
-  
+    (check-equal? (robots-txt-sitemap-urls robots) '("https://example.com/sitemap.xml"))
+    (check-equal? (robots-txt-host robots) "example.com")
+    (check-true (string? (robots-txt-raw-content robots))))
+
+  ;; Multiple user-agents parsing
+  (test-case "robots.txt parsing - multiple user-agents"
+    (define content
+      "User-agent: Googlebot\nDisallow: /google-private/\n\nUser-agent: Bingbot\nDisallow: /bing-private/\n\nUser-agent: *\nDisallow: /all-private/")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-equal? (length (robots-txt-rules robots)) 3))
+
+  ;; Comments and empty lines
+  (test-case "robots.txt parsing - comments"
+    (define content
+      "# This is a comment\nUser-agent: *\n# Another comment\nDisallow: /private/\n\n\nAllow: /public/")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-equal? (length (robots-txt-rules robots)) 1)
+    (define rule (first (robots-txt-rules robots)))
+    (check-equal? (robots-rule-user-agent rule) "*"))
+
+  ;; Invalid crawl-delay
+  (test-case "robots.txt parsing - invalid crawl-delay"
+    (define content
+      "User-agent: *\nCrawl-delay: invalid\nDisallow: /")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (define rule (first (robots-txt-rules robots)))
+    (check-false (robots-rule-crawl-delay rule)))
+
+  ;; Multiple sitemaps
+  (test-case "robots.txt parsing - multiple sitemaps"
+    (define content
+      "User-agent: *\nDisallow:\nSitemap: https://example.com/sitemap1.xml\nSitemap: https://example.com/sitemap2.xml")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-equal? (length (robots-txt-sitemap-urls robots)) 2))
+
+  ;; Crawling permission checks - basic
   (test-case "Crawling permission checks"
     (define sample-robots
       (parse-robots-txt "User-agent: *\nDisallow: /private/\nAllow: /private/public/" "example.com"))
-    
+
     (check-true (is-crawling-allowed? sample-robots "TestBot" "/"))
     (check-false (is-crawling-allowed? sample-robots "TestBot" "/private/secret"))
-    (check-true (is-crawling-allowed? sample-robots "TestBot" "/private/public/page"))))
+    (check-true (is-crawling-allowed? sample-robots "TestBot" "/private/public/page"))
+    (check-true (is-crawling-allowed? sample-robots "TestBot" "/other/path")))
+
+  ;; Crawling permission - no rules
+  (test-case "Crawling permission - no matching rules"
+    (define robots (parse-robots-txt "" "example.com"))
+    (check-true (is-crawling-allowed? robots "AnyBot" "/any/path")))
+
+  ;; User-agent specific rules
+  (test-case "Crawling permission - specific user-agent"
+    (define content
+      "User-agent: SpecificBot\nDisallow: /specific/\n\nUser-agent: *\nDisallow: /general/")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-false (is-crawling-allowed? robots "SpecificBot" "/specific/page"))
+    ;; Wildcard rules still apply to SpecificBot
+    (check-false (is-crawling-allowed? robots "SpecificBot" "/general/page"))
+    (check-true (is-crawling-allowed? robots "OtherBot" "/specific/page"))
+    (check-false (is-crawling-allowed? robots "OtherBot" "/general/page")))
+
+  ;; Wildcard pattern matching
+  (test-case "Crawling permission - wildcard patterns"
+    (define content
+      "User-agent: *\nDisallow: /admin*\nAllow: /admin/public*")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-false (is-crawling-allowed? robots "Bot" "/admin/secret"))
+    (check-true (is-crawling-allowed? robots "Bot" "/admin/public/page")))
+
+  ;; Get crawl delay tests
+  (test-case "Get crawl delay"
+    (define content
+      "User-agent: *\nCrawl-delay: 5\nDisallow:")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-equal? (get-crawl-delay robots "AnyBot") 5))
+
+  (test-case "Get crawl delay - no delay specified"
+    (define robots (parse-robots-txt "User-agent: *\nDisallow:" "example.com"))
+    (check-false (get-crawl-delay robots "AnyBot")))
+
+  (test-case "Get crawl delay - specific user-agent"
+    (define content
+      "User-agent: SlowBot\nCrawl-delay: 10\n\nUser-agent: *\nCrawl-delay: 2")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-equal? (get-crawl-delay robots "SlowBot") 10)
+    (check-equal? (get-crawl-delay robots "OtherBot") 2))
+
+  ;; Get sitemaps tests
+  (test-case "Get sitemaps"
+    (define content
+      "User-agent: *\nDisallow:\nSitemap: https://example.com/sitemap.xml")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-equal? (get-sitemaps robots) '("https://example.com/sitemap.xml")))
+
+  (test-case "Get sitemaps - empty"
+    (define robots (parse-robots-txt "User-agent: *\nDisallow:" "example.com"))
+    (check-equal? (get-sitemaps robots) '()))
+
+  ;; Cache tests
+  (test-case "Cache creation and basic operations"
+    (define cache (create-robots-cache))
+    (check-true (hash? cache))
+    (check-equal? (hash-count cache) 0))
+
+  (test-case "Cache robots and retrieve"
+    (define cache (create-robots-cache))
+    (define robots (parse-robots-txt "User-agent: *\nDisallow:" "example.com"))
+
+    (cache-robots cache "https://example.com" robots)
+    (define cached (get-cached-robots cache "https://example.com" "example.com"))
+    (check-not-false cached)
+    (check-equal? (robots-txt-host cached) "example.com"))
+
+  (test-case "Cache miss - not cached"
+    (define cache (create-robots-cache))
+    (check-false (get-cached-robots cache "https://notcached.com" "notcached.com")))
+
+  ;; Host extraction tests
+  (test-case "Host extraction from URL"
+    (check-equal? (get-host-from-url "https://example.com/path") "example.com")
+    (check-equal? (get-host-from-url "http://subdomain.example.com:8080/path")
+                  "subdomain.example.com"))
+
+  (test-case "Host extraction - invalid URL"
+    ;; Returns #f for URLs without a valid host
+    (check-false (get-host-from-url "not-a-valid-url")))
+
+  ;; Edge cases
+  (test-case "Empty robots.txt"
+    (define robots (parse-robots-txt "" "example.com"))
+    (check-true (robots-txt? robots))
+    (check-equal? (length (robots-txt-rules robots)) 0))
+
+  (test-case "Robots.txt with only comments"
+    (define robots (parse-robots-txt "# Just a comment\n# Another comment" "example.com"))
+    (check-true (robots-txt? robots))
+    (check-equal? (length (robots-txt-rules robots)) 0))
+
+  (test-case "Case insensitivity in directives"
+    (define content
+      "USER-AGENT: *\nDISALLOW: /private/\nALLOW: /public/")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-equal? (length (robots-txt-rules robots)) 1))
+
+  (test-case "Empty disallow - allow all"
+    (define content
+      "User-agent: *\nDisallow:")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-true (is-crawling-allowed? robots "Bot" "/any/path")))
+
+  (test-case "Disallow / - disallow all"
+    (define content
+      "User-agent: *\nDisallow: /")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-false (is-crawling-allowed? robots "Bot" "/any/path")))
+
+  ;; robots-rule struct tests
+  (test-case "robots-rule struct accessors"
+    (define rule (robots-rule "TestBot" '("/private/") '("/public/") 5))
+    (check-equal? (robots-rule-user-agent rule) "TestBot")
+    (check-equal? (robots-rule-disallowed-paths rule) '("/private/"))
+    (check-equal? (robots-rule-allowed-paths rule) '("/public/"))
+    (check-equal? (robots-rule-crawl-delay rule) 5))
+
+  ;; User-agent substring matching
+  (test-case "User-agent substring matching"
+    (define content
+      "User-agent: Google\nDisallow: /google-only/")
+
+    (define robots (parse-robots-txt content "example.com"))
+    (check-false (is-crawling-allowed? robots "Googlebot" "/google-only/page"))
+    (check-false (is-crawling-allowed? robots "Google-News" "/google-only/page"))))

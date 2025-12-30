@@ -66,7 +66,11 @@
   (with-handlers ([exn:fail? (lambda (e)
                                (printf "Invalid XPath (~a): ~a~n" xpath-expr (exn-message e))
                                (lambda (x) '()))])
-    (sxpath xpath-expr)))
+    (let ([result (sxpath xpath-expr)])
+      ;; sxpath returns #f for invalid xpath instead of throwing
+      (if result
+          result
+          (lambda (x) '())))))
 
 ;; ============================================================================
 ;; Core Extraction Functions
@@ -321,6 +325,7 @@
       (check-true (procedure? xpath-fn))))
 
   (test-case "make-xpath handles invalid xpath gracefully"
+    ;; Invalid xpath returns a lambda that returns empty list
     (let ([xpath-fn (make-xpath "[[[invalid")])
       (check-true (procedure? xpath-fn))
       (check-equal? (xpath-fn '(*TOP*)) '())))
@@ -487,4 +492,89 @@
 
   (test-case "handles unicode content"
     (let ([text (extract-text "<p>日本語テスト</p>" "//p")])
-      (check-equal? text "日本語テスト"))))
+      (check-equal? text "日本語テスト")))
+
+  ;; File-based extraction tests
+  (test-case "extract-from-crawl-results handles hash input"
+    (let* ([test-data (hash 'data (list (hash 'content "<html><p class='test'>content</p></html>"
+                                              'url "http://example.com"
+                                              'title "Test Page")))]
+           [xpath-map (hash 'text "//p[@class='test']")]
+           [results (extract-from-crawl-results test-data xpath-map)])
+      (check-equal? (length results) 1)
+      (check-equal? (hash-ref (car results) 'text) "content")
+      (check-equal? (hash-ref (car results) 'source_url) "http://example.com")
+      (check-equal? (hash-ref (car results) 'source_title) "Test Page")))
+
+  (test-case "extract-from-crawl-results handles empty data"
+    (let ([results (extract-from-crawl-results (hash 'data '()) (hash 'x "//p"))])
+      (check-equal? results '())))
+
+  (test-case "extract-from-crawl-results skips items without content"
+    (let* ([test-data (hash 'data (list (hash 'url "http://example.com")))]
+           [results (extract-from-crawl-results test-data (hash 'x "//p"))])
+      (check-equal? results '())))
+
+  (test-case "extract-from-crawl-results handles multiple items"
+    (let* ([test-data (hash 'data (list
+                                   (hash 'content "<html><h1>Page 1</h1></html>"
+                                         'url "http://example.com/1"
+                                         'title "Page 1")
+                                   (hash 'content "<html><h1>Page 2</h1></html>"
+                                         'url "http://example.com/2"
+                                         'title "Page 2")))]
+           [xpath-map (hash 'heading "//h1")]
+           [results (extract-from-crawl-results test-data xpath-map)])
+      (check-equal? (length results) 2)
+      (check-equal? (hash-ref (first results) 'heading) "Page 1")
+      (check-equal? (hash-ref (second results) 'heading) "Page 2")))
+
+  ;; sxml->text additional edge cases
+  (test-case "sxml->text handles plain string"
+    (check-equal? (sxml->text "plain text") "plain text"))
+
+  (test-case "sxml->text handles symbol"
+    (check-equal? (sxml->text 'symbol) ""))
+
+  (test-case "sxml->text handles *TOP* wrapper"
+    (let ([text (sxml->text '(*TOP* (p "content")))])
+      (check-equal? text "content")))
+
+  (test-case "sxml->text handles deeply nested"
+    (let ([text (sxml->text '(div (p (span (b (i "deep"))))))])
+      (check-equal? text "deep")))
+
+  (test-case "sxml->text handles multiple children"
+    (let ([text (sxml->text '(div (p "first") " " (p "second")))])
+      (check-equal? text "first second")))
+
+  ;; sxml->text-list additional tests
+  (test-case "sxml->text-list handles mixed list"
+    (let ([result (sxml->text-list (list "plain" '(p "element")))])
+      (check-equal? result '("plain" "element"))))
+
+  ;; More attribute extraction edge cases
+  (test-case "sxml-attr handles short attribute list"
+    (let ([attr (sxml-attr '(a (@ (href)) "text") 'href)])
+      (check-false attr)))
+
+  ;; Additional extract-by-xpath edge cases
+  (test-case "extract-by-xpath with class selector"
+    (let ([results (extract-by-xpath test-html "//div[@class='product']")])
+      (check-equal? (length results) 2)))
+
+  ;; extract-items with missing fields
+  (test-case "extract-items handles missing child elements"
+    (let ([items (extract-items "<div class='item'><p>text</p></div>"
+                                "//div[@class='item']"
+                                (hash 'text ".//p"
+                                      'missing ".//nonexistent"))])
+      (check-equal? (length items) 1)
+      (check-false (hash-ref (car items) 'missing))))
+
+  ;; extract-items with string nodes
+  (test-case "extract-items handles attribute values"
+    (let ([items (extract-items test-html
+                                "//a"
+                                (hash 'href "./@href"))])
+      (check-equal? (length items) 2))))

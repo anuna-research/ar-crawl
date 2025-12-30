@@ -309,35 +309,231 @@
   
   (printf "Environment setup complete~n"))
 
+;; ============================================================================
 ;; Unit Tests
-;; ----------
+;; ============================================================================
 
 (module+ test
-  (require rackunit)
-  
-  (test-case "Environment variable substitution"
+  (require rackunit
+           racket/file)
+
+  ;; Helper for temp files
+  (define (with-temp-config-file content proc)
+    (let ([path (make-temporary-file "config-~a.json")])
+      (dynamic-wind
+        (lambda () (display-to-file content path #:exists 'replace))
+        (lambda () (proc path))
+        (lambda () (when (file-exists? path) (delete-file path))))))
+
+  ;; Environment Variable Tests
+  (test-case "substitute-env-vars in hash"
     (putenv "TEST_VAR" "test_value")
     (define config (hash 'key "${TEST_VAR}"))
     (define result (substitute-env-vars config))
     (check-equal? (hash-ref result 'key) "test_value"))
-  
-  (test-case "Configuration validation"
+
+  (test-case "substitute-env-vars in nested hash"
+    (putenv "NESTED_VAR" "nested")
+    (define config (hash 'outer (hash 'inner "${NESTED_VAR}")))
+    (define result (substitute-env-vars config))
+    (check-equal? (hash-ref (hash-ref result 'outer) 'inner) "nested"))
+
+  (test-case "substitute-env-vars in list"
+    (putenv "LIST_VAR" "item")
+    (define config (list "${LIST_VAR}" "static"))
+    (define result (substitute-env-vars config))
+    (check-equal? result '("item" "static")))
+
+  (test-case "substitute-env-vars with missing var uses empty string"
+    (define config (hash 'key "${NONEXISTENT_VAR_12345}"))
+    (define result (substitute-env-vars config))
+    (check-equal? (hash-ref result 'key) ""))
+
+  (test-case "substitute-env-vars preserves non-string values"
+    (define config (hash 'num 42 'bool #t 'str "text"))
+    (define result (substitute-env-vars config))
+    (check-equal? (hash-ref result 'num) 42)
+    (check-equal? (hash-ref result 'bool) #t))
+
+  (test-case "get-env-var returns value"
+    (putenv "GET_TEST" "value")
+    (check-equal? (get-env-var "GET_TEST") "value"))
+
+  (test-case "get-env-var returns #f for missing"
+    (check-false (get-env-var "MISSING_VAR_99999")))
+
+  (test-case "set-env-var sets value"
+    (set-env-var "SET_TEST" "new_value")
+    (check-equal? (getenv "SET_TEST") "new_value"))
+
+  ;; Configuration Validation Tests
+  (test-case "validate-config accepts valid config"
     (define valid-config (default-config))
-    (check-true (validate-config valid-config))
-    
-    (define invalid-config (hash 'invalid "config"))
-    (check-false (validate-config invalid-config)))
-  
-  (test-case "Nested config access"
-    (define config (hash 'level1 (hash 'level2 "value")))
-    (check-equal? (get-config-value config '(level1 level2)) "value")
+    (check-true (validate-config valid-config)))
+
+  (test-case "validate-config rejects non-hash"
+    (check-false (validate-config "not a hash"))
+    (check-false (validate-config '())))
+
+  (test-case "validate-config rejects missing crawler"
+    (check-false (validate-config (hash 'services (hash)))))
+
+  (test-case "validate-config rejects missing services"
+    (check-false (validate-config (hash 'crawler (hash)))))
+
+  (test-case "validate-config rejects empty services list"
+    (check-false (validate-config
+                  (hash 'crawler (hash 'services '()
+                                       'rate_limit_ms 1000
+                                       'timeout_ms 30000)
+                        'services (hash 'direct (hash))))))
+
+  (test-case "validate-config rejects invalid rate_limit_ms"
+    (check-false (validate-config
+                  (hash 'crawler (hash 'services '("direct")
+                                       'rate_limit_ms "not a number"
+                                       'timeout_ms 30000)
+                        'services (hash 'direct (hash))))))
+
+  ;; Configuration Loading Tests
+  (test-case "load-config-from-string parses JSON"
+    (define json "{\"crawler\": {\"services\": [\"direct\"], \"rate_limit_ms\": 1000, \"timeout_ms\": 30000}, \"services\": {\"direct\": {}}}")
+    (define result (load-config-from-string json #:env-substitution #f))
+    (check-true (hash? result))
+    (check-true (hash-has-key? result 'crawler)))
+
+  (test-case "load-config-from-string with env substitution"
+    (putenv "CONFIG_VAL" "substituted")
+    (define json "{\"key\": \"${CONFIG_VAL}\"}")
+    (define result (load-config-from-string json))
+    (check-equal? (hash-ref result 'key) "substituted"))
+
+  (test-case "load-config-from-string without env substitution"
+    (define json "{\"key\": \"${SHOULD_NOT_SUB}\"}")
+    (define result (load-config-from-string json #:env-substitution #f))
+    (check-equal? (hash-ref result 'key) "${SHOULD_NOT_SUB}"))
+
+  (test-case "load-config-from-string rejects invalid JSON"
+    (check-exn exn:fail?
+               (lambda () (load-config-from-string "not json"))))
+
+  (test-case "load-config loads from file"
+    (with-temp-config-file
+     (jsexpr->string (default-config))
+     (lambda (path)
+       (define result (load-config path))
+       (check-true (hash? result))
+       (check-true (validate-config result)))))
+
+  (test-case "load-config fails for missing file"
+    (check-exn exn:fail?
+               (lambda () (load-config "/nonexistent/path/config.json"))))
+
+  (test-case "load-config fails for invalid config"
+    (with-temp-config-file
+     "{\"invalid\": true}"
+     (lambda (path)
+       (check-exn exn:fail?
+                  (lambda () (load-config path))))))
+
+  ;; Configuration Access Tests
+  (test-case "get-config-value retrieves nested values"
+    (define config (hash 'level1 (hash 'level2 (hash 'level3 "value"))))
+    (check-equal? (get-config-value config '(level1 level2 level3)) "value"))
+
+  (test-case "get-config-value returns default for missing path"
+    (define config (hash 'a 1))
     (check-equal? (get-config-value config '(nonexistent) "default") "default"))
-  
-  (test-case "Config merging"
+
+  (test-case "get-config-value returns default for non-hash intermediate"
+    (define config (hash 'a "not a hash"))
+    (check-equal? (get-config-value config '(a b) "default") "default"))
+
+  (test-case "get-config-value with empty path returns config"
+    (define config (hash 'a 1))
+    (check-equal? (get-config-value config '()) config))
+
+  ;; Config Merging Tests
+  (test-case "merge-configs merges deeply"
     (define base (hash 'a 1 'b (hash 'c 2)))
     (define override (hash 'b (hash 'd 3) 'e 4))
     (define merged (merge-configs base override))
     (check-equal? (hash-ref merged 'a) 1)
     (check-equal? (hash-ref (hash-ref merged 'b) 'c) 2)
     (check-equal? (hash-ref (hash-ref merged 'b) 'd) 3)
-    (check-equal? (hash-ref merged 'e) 4)))
+    (check-equal? (hash-ref merged 'e) 4))
+
+  (test-case "merge-configs override wins for same keys"
+    (define base (hash 'a 1))
+    (define override (hash 'a 2))
+    (check-equal? (hash-ref (merge-configs base override) 'a) 2))
+
+  ;; Default Configurations Tests
+  (test-case "default-config returns valid config"
+    (define config (default-config))
+    (check-true (validate-config config))
+    (check-true (hash-has-key? config 'crawler))
+    (check-true (hash-has-key? config 'services)))
+
+  (test-case "development-config returns valid config"
+    (define config (development-config))
+    (check-true (validate-config config))
+    (check-equal? (get-config-value config '(crawler log_level)) "debug"))
+
+  (test-case "production-config-template returns valid config"
+    (define config (production-config-template))
+    (check-true (validate-config config))
+    (check-true (> (length (get-config-value config '(crawler services))) 1)))
+
+  ;; File Operations Tests
+  (test-case "save-config writes JSON file"
+    (let ([path (make-temporary-file "save-test-~a.json")])
+      (dynamic-wind
+        void
+        (lambda ()
+          (save-config (hash 'test "value") path)
+          (check-true (file-exists? path))
+          (let ([content (file->string path)])
+            (check-true (string-contains? content "test"))))
+        (lambda () (when (file-exists? path) (delete-file path))))))
+
+  (test-case "save-config creates parent directory"
+    (let ([dir (make-temporary-file "savedir-~a" 'directory)])
+      (dynamic-wind
+        void
+        (lambda ()
+          (let ([path (build-path dir "sub" "config.json")])
+            (save-config (hash 'a 1) path)
+            (check-true (file-exists? path))))
+        (lambda () (delete-directory/files dir)))))
+
+  (test-case "create-default-config-file creates default config"
+    (let ([path (make-temporary-file "create-test-~a.json")])
+      (dynamic-wind
+        (lambda () (when (file-exists? path) (delete-file path)))
+        (lambda ()
+          (create-default-config-file path)
+          (check-true (file-exists? path))
+          (let ([loaded (load-config path)])
+            (check-true (validate-config loaded))))
+        (lambda () (when (file-exists? path) (delete-file path))))))
+
+  (test-case "create-default-config-file creates development config"
+    (let ([path (make-temporary-file "dev-test-~a.json")])
+      (dynamic-wind
+        (lambda () (when (file-exists? path) (delete-file path)))
+        (lambda ()
+          (create-default-config-file path 'development)
+          (let ([loaded (load-config path)])
+            (check-equal? (get-config-value loaded '(crawler log_level)) "debug")))
+        (lambda () (when (file-exists? path) (delete-file path))))))
+
+  (test-case "create-default-config-file creates production config"
+    (let ([path (make-temporary-file "prod-test-~a.json")])
+      (dynamic-wind
+        (lambda () (when (file-exists? path) (delete-file path)))
+        (lambda ()
+          (create-default-config-file path 'production)
+          (let ([loaded (load-config path #:env-substitution #f)])
+            (check-true (validate-config loaded))))
+        (lambda () (when (file-exists? path) (delete-file path)))))))

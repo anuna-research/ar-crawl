@@ -659,7 +659,7 @@
   
   (test-case "Service registration"
     (register-service 'test-service (lambda (url config) "test"))
-    (check-true (member 'test-service (get-available-services))))
+    (check-not-false (member 'test-service (get-available-services))))
   
   (test-case "Response normalization"
     (define response (normalize-response "test content"))
