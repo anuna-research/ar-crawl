@@ -292,7 +292,13 @@
 (define (playwright-adaptor url
                            #:service-url [service-url PLAYWRIGHT_SERVICE_URL]
                            #:timeout [timeout 30000]
-                           #:wait-for [wait-for "networkidle"]
+                           #:wait-for [wait-for "load"]
+                           #:delay [delay 5000]  ;; 5s delay for SPA rendering
+                           #:scroll [scroll #f]  ;; Scroll to bottom
+                           #:scroll-count [scroll-count 0]  ;; Scroll iterations for infinite scroll
+                           #:scroll-delay [scroll-delay 1000]  ;; Delay between scrolls (ms)
+                           #:click-selector [click-selector #f]  ;; CSS selector to click
+                           #:click-count [click-count 1]  ;; Number of clicks
                            #:viewport [viewport (hash 'width 1920 'height 1080)]
                            #:user-agent [user-agent "AR-Crawl/1.0 Playwright (+https://github.com/anuna-research/ar-crawl)"]
                            #:block-resources [block-resources '()]
@@ -304,6 +310,12 @@
     (hash 'url url
           'timeout timeout
           'waitFor wait-for
+          'delay delay
+          'scroll scroll
+          'scrollCount scroll-count
+          'scrollDelay scroll-delay
+          'clickSelector click-selector
+          'clickCount click-count
           'viewport viewport
           'userAgent user-agent
           'blockResources block-resources
@@ -401,7 +413,13 @@
      (playwright-adaptor url
                         #:service-url (hash-ref config 'playwright-service-url PLAYWRIGHT_SERVICE_URL)
                         #:timeout (hash-ref config 'timeout 30000)
-                        #:wait-for (hash-ref config 'wait-for "networkidle")
+                        #:wait-for (hash-ref config 'wait-for "load")
+                        #:delay (hash-ref config 'delay 5000)
+                        #:scroll (hash-ref config 'scroll #f)
+                        #:scroll-count (hash-ref config 'scroll-count 0)
+                        #:scroll-delay (hash-ref config 'scroll-delay 1000)
+                        #:click-selector (hash-ref config 'click-selector #f)
+                        #:click-count (hash-ref config 'click-count 1)
                         #:viewport (hash-ref config 'viewport (hash 'width 1920 'height 1080))
                         #:user-agent (hash-ref config 'user-agent "AR-Crawl/1.0 Playwright")
                         #:block-resources (hash-ref config 'block-resources '())

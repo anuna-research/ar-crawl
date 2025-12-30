@@ -19,8 +19,14 @@ async function initBrowser() {
 async function fetchPage(options) {
   const {
     url,
-    waitFor = 'networkidle',
+    waitFor = 'load',
     timeout = 30000,
+    delay = 0,  // Additional delay after page load (ms) - useful for SPAs
+    scroll = false,  // Scroll to bottom of page
+    scrollCount = 0,  // Number of scroll iterations (for infinite scroll)
+    scrollDelay = 1000,  // Delay between scrolls (ms)
+    clickSelector = null,  // CSS selector to click (e.g., "Load More" button)
+    clickCount = 1,  // Number of times to click
     viewport = { width: 1920, height: 1080 },
     userAgent = 'AR-Crawl/1.0 Playwright (+https://github.com/anuna-research/ar-crawl)',
     blockResources = [],
@@ -68,6 +74,38 @@ async function fetchPage(options) {
     // Wait for specific selector if provided
     if (waitSelector) {
       await page.waitForSelector(waitSelector, { timeout });
+    }
+
+    // Additional delay for SPA rendering
+    if (delay > 0) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    // Scroll to bottom (single scroll or multiple for infinite scroll)
+    if (scroll || scrollCount > 0) {
+      const iterations = scrollCount > 0 ? scrollCount : 1;
+      for (let i = 0; i < iterations; i++) {
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await new Promise(resolve => setTimeout(resolve, scrollDelay));
+        // Wait for any new content to load
+        await page.waitForLoadState('networkidle').catch(() => {});
+      }
+      // Scroll back to top for consistent content extraction
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
+
+    // Click element (e.g., "Load More" button)
+    if (clickSelector) {
+      for (let i = 0; i < clickCount; i++) {
+        try {
+          await page.click(clickSelector, { timeout: 5000 });
+          await new Promise(resolve => setTimeout(resolve, scrollDelay));
+          await page.waitForLoadState('networkidle').catch(() => {});
+        } catch (e) {
+          console.log(`Click ${i + 1}/${clickCount} failed: ${e.message}`);
+          break;  // Stop if button not found
+        }
+      }
     }
 
     // Get page content and metadata
