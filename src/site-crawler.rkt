@@ -9,7 +9,7 @@
 |#
 
 (require racket/contract
-         racket/hash
+         (except-in racket/hash hash-filter)
          racket/set
          (prefix-in str: racket/string)
          net/url
