@@ -16,6 +16,7 @@
          gregor
          html-parsing
          sxml
+         sxml/sxpath
          http123/util/url)
 
 (provide
@@ -77,13 +78,26 @@
   [extract-links (-> hash? (listof string?))]
   [extract-metadata (-> hash? hash?)]
   [call-service (-> symbol? string? hash? (or/c hash? #f))]
+  [filter-content-by-xpath (-> string? string? string?)]
+   [apply-xpath-to-response (-> hash? (or/c string? #f) hash?)]
   
   ;; Built-in direct service
-  [direct-http-adaptor (->* (string?) 
+  [direct-http-adaptor (->* (string?)
                            (#:timeout exact-positive-integer?
                             #:user-agent string?
                             #:follow-redirects boolean?)
-                           (or/c hash? #f))]))
+                           (or/c hash? #f))]
+
+  ;; Playwright local browser service
+  [playwright-adaptor (->* (string?)
+                          (#:service-url string?
+                           #:timeout exact-positive-integer?
+                           #:wait-for string?
+                           #:viewport hash?
+                           #:user-agent string?
+                           #:block-resources (listof string?)
+                           #:extract-links boolean?)
+                          (or/c hash? #f))]))
 
 ;; Environment Variables
 ;; ---------------------
@@ -92,6 +106,7 @@
 (define SCRAPINGBEE_API_KEY (or (getenv "SCRAPINGBEE_API_KEY") ""))
 (define BROWSERLESS_API_KEY (or (getenv "BROWSERLESS_API_KEY") ""))
 (define SCRAPERAPI_API_KEY (or (getenv "SCRAPERAPI_API_KEY") ""))
+(define PLAYWRIGHT_SERVICE_URL (or (getenv "PLAYWRIGHT_SERVICE_URL") "http://localhost:3033"))
 
 ;; Service Registry
 ;; ----------------
@@ -269,6 +284,54 @@
       (and response
            (normalize-response response)))))
 
+;; Playwright Adapter (Local Browser Service)
+;; ------------------------------------------
+
+;; @function{playwright-adaptor}
+;; @description{Fetch content using local Playwright browser service}
+(define (playwright-adaptor url
+                           #:service-url [service-url PLAYWRIGHT_SERVICE_URL]
+                           #:timeout [timeout 30000]
+                           #:wait-for [wait-for "networkidle"]
+                           #:viewport [viewport (hash 'width 1920 'height 1080)]
+                           #:user-agent [user-agent "AR-Crawl/1.0 Playwright (+https://github.com/anuna-research/ar-crawl)"]
+                           #:block-resources [block-resources '()]
+                           #:extract-links [extract-links #t])
+
+  (define endpoint (string-append service-url "/fetch"))
+
+  (define payload
+    (hash 'url url
+          'timeout timeout
+          'waitFor wait-for
+          'viewport viewport
+          'userAgent user-agent
+          'blockResources block-resources
+          'extractLinks extract-links))
+
+  (with-handlers ([exn:fail? (lambda (e)
+                              (printf "Playwright service error: ~a~n" (exn-message e))
+                              #f)])
+    (let* ([json-payload (jsexpr->string payload)]
+           [headers (list "Content-Type: application/json")]
+           [url-obj (string->url endpoint)]
+           [post-data (string->bytes/utf-8 json-payload)]
+           [port (post-pure-port url-obj post-data headers)]
+           [response (port->string port)]
+           [_ (close-input-port port)])
+      (if response
+          (let ([parsed (with-handlers ([exn:fail? (lambda (e) #f)])
+                          (string->jsexpr response))])
+            (if (and parsed (hash? parsed) (not (hash-ref parsed 'error #f)))
+                (hash 'content (hash-ref parsed 'content "")
+                      'url (hash-ref parsed 'url url)
+                      'title (hash-ref parsed 'title "")
+                      'links (hash-ref parsed 'links '())
+                      'metadata (hash-ref parsed 'metadata (hash))
+                      'timestamp (generate-timestamp))
+                #f))
+          #f))))
+
 ;; Fallback System
 ;; ---------------
 
@@ -333,8 +396,18 @@
                         #:api-key (hash-ref config 'scraperapi-api-key SCRAPERAPI_API_KEY)
                         #:render (hash-ref config 'render #t)
                         #:premium (hash-ref config 'premium #f))]
-    
-    [else 
+
+    [(playwright)
+     (playwright-adaptor url
+                        #:service-url (hash-ref config 'playwright-service-url PLAYWRIGHT_SERVICE_URL)
+                        #:timeout (hash-ref config 'timeout 30000)
+                        #:wait-for (hash-ref config 'wait-for "networkidle")
+                        #:viewport (hash-ref config 'viewport (hash 'width 1920 'height 1080))
+                        #:user-agent (hash-ref config 'user-agent "AR-Crawl/1.0 Playwright")
+                        #:block-resources (hash-ref config 'block-resources '())
+                        #:extract-links (hash-ref config 'extract-links #t))]
+
+    [else
      (let ([custom-service (hash-ref service-registry service #f)])
        (if custom-service
            (custom-service url config)
@@ -399,6 +472,48 @@
 ;; @description{Extract metadata from normalized response}
 (define (extract-metadata response)
   (hash-ref response 'metadata (hash)))
+
+;; @function{filter-content-by-xpath}
+;; @description{Filter HTML content using XPath expression}
+(define (filter-content-by-xpath html-content xpath-expr)
+  (with-handlers ([exn:fail? (lambda (e) 
+                              (printf "XPath filtering error: ~a~n" (exn-message e))
+                              html-content)])
+    (if (or (not xpath-expr) (string=? xpath-expr ""))
+        html-content
+        (let* ([html-xexp (html->xexp html-content)]
+               [filtered-nodes ((sxpath xpath-expr) html-xexp)])
+          (if (empty? filtered-nodes)
+              ""
+              (string-join 
+               (map (lambda (node)
+                      (cond
+                        [(string? node) node]
+                        [(list? node) (extract-text-from-sxml node)]
+                        [else (format "~a" node)]))
+                    filtered-nodes)
+               "\n"))))))
+
+;; @function{extract-text-from-sxml}
+;; @description{Extract text content from SXML node}
+(define (extract-text-from-sxml node)
+  (cond
+    [(string? node) node]
+    [(list? node)
+     (string-join 
+      (filter string?
+              (flatten 
+               (map extract-text-from-sxml (cdr node))))
+      " ")]
+    [else ""]))
+
+;; @function{apply-xpath-to-response}
+;; @description{Apply XPath filter to a normalized response}
+(define (apply-xpath-to-response response xpath)
+  (if (or (not xpath) (string=? xpath ""))
+      response
+      (hash-set response 'content 
+                (filter-content-by-xpath (hash-ref response 'content "") xpath))))
 
 ;; HTTP Helper Functions
 ;; ---------------------
@@ -516,6 +631,7 @@
 (register-service 'scrapingbee scrapingbee-adaptor)
 (register-service 'browserless browserless-adaptor)
 (register-service 'scraperapi scraperapi-adaptor)
+(register-service 'playwright playwright-adaptor)
 
 ;; Unit Tests
 ;; ----------
