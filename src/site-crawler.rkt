@@ -348,10 +348,10 @@
                 [result (get-job-results crawler job-id)]
                 [new-visited (set-add visited current-url)])
            
-           (if result
+           (define page-data (and result (car (job-results-data result))))
+           (if (and result page-data (hash? page-data))
                ;; Success - extract links and continue
-               (let* ([page-data (car (job-results-data result))]
-                      [links (extract-links-from-result page-data)]
+               (let* ([links (extract-links-from-result page-data)]
                       [normalized-links (map (lambda (link) 
                                               (normalize-url link current-url)) 
                                             links)]
@@ -875,4 +875,259 @@
                    #:max-pages 10000
                    #:timeout-total-ms 3600000)])
       (check-equal? (site-crawl-config-max-pages config) 10000)
-      (check-equal? (site-crawl-config-timeout-total-ms config) 3600000))))
+      (check-equal? (site-crawl-config-timeout-total-ms config) 3600000)))
+
+  ;; =========================================================================
+  ;; Integration Tests with Mock Services
+  ;; =========================================================================
+
+  ;; Register a mock crawl service for testing
+  (define (setup-mock-crawl-service)
+    (register-service 'mock-crawl-test
+      (lambda (url config)
+        ;; Return different content based on URL
+        (cond
+          [(string-contains? url "page1")
+           (hash 'content "<html><body><h1>Page 1</h1><a href=\"http://test.local/page2\">Link to page 2</a></body></html>"
+                 'url url
+                 'links '("http://test.local/page2")
+                 'status 200)]
+          [(string-contains? url "page2")
+           (hash 'content "<html><body><h1>Page 2</h1><a href=\"http://test.local/page3\">Link to page 3</a></body></html>"
+                 'url url
+                 'links '("http://test.local/page3")
+                 'status 200)]
+          [(string-contains? url "page3")
+           (hash 'content "<html><body><h1>Page 3</h1>No more links</body></html>"
+                 'url url
+                 'links '()
+                 'status 200)]
+          [else
+           (hash 'content "<html><body><h1>Home</h1><a href=\"http://test.local/page1\">Page 1</a></body></html>"
+                 'url url
+                 'links '("http://test.local/page1")
+                 'status 200)]))))
+
+  (test-case "crawl-site with mock service - single page"
+    (setup-mock-crawl-service)
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 1
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config)])
+      (check-true (site-crawl-result? result))
+      (check-equal? (hash-ref (site-crawl-result-statistics result) 'pages-crawled) 1)))
+
+  (test-case "crawl-site with mock service - multiple pages"
+    (setup-mock-crawl-service)
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 5
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config)])
+      (check-true (site-crawl-result? result))
+      ;; Should crawl multiple pages following links
+      (check-true (>= (hash-ref (site-crawl-result-statistics result) 'pages-crawled) 1))))
+
+  (test-case "crawl-site respects max-pages limit"
+    (setup-mock-crawl-service)
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 2
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config)])
+      (check-true (<= (hash-ref (site-crawl-result-statistics result) 'pages-crawled) 2))))
+
+  (test-case "crawl-site returns proper statistics"
+    (setup-mock-crawl-service)
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 3
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config)]
+           [stats (site-crawl-result-statistics result)])
+      (check-true (hash-has-key? stats 'pages-crawled))
+      (check-true (hash-has-key? stats 'failed-urls))
+      (check-true (hash-has-key? stats 'total-urls-discovered))
+      (check-true (hash-has-key? stats 'duration-ms))
+      (check-true (hash-has-key? stats 'average-page-time-ms))))
+
+  (test-case "crawl-site returns proper metadata"
+    (setup-mock-crawl-service)
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 1
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config)]
+           [metadata (site-crawl-result-metadata result)])
+      (check-equal? (hash-ref metadata 'seed-url) "http://test.local/")
+      (check-equal? (hash-ref metadata 'base-domain) "test.local")
+      (check-true (site-crawl-config? (hash-ref metadata 'config)))))
+
+  (test-case "crawl-site with progress callback"
+    (setup-mock-crawl-service)
+    (define callback-calls '())
+    (define (track-callback msg current total)
+      (set! callback-calls (cons (list msg current total) callback-calls)))
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 2
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config
+                              #:progress-callback track-callback)])
+      (check-true (site-crawl-result? result))
+      ;; Should have received progress callbacks
+      (check-true (> (length callback-calls) 0))))
+
+  (test-case "crawl-site same-domain filtering"
+    ;; Register a service that returns cross-domain links
+    (register-service 'mock-cross-domain
+      (lambda (url config)
+        (hash 'content "<html><body>Test</body></html>"
+              'url url
+              'links '("http://test.local/page1"
+                      "http://other-domain.com/page"
+                      "http://test.local/page2")
+              'status 200)))
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-cross-domain)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 10
+                         #:same-domain-only #t
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config)])
+      ;; Should not have crawled other-domain.com
+      (check-true (site-crawl-result? result))))
+
+  (test-case "crawl-site URL pattern filtering"
+    ;; Register a service that returns various URLs
+    (register-service 'mock-pattern-test
+      (lambda (url config)
+        (hash 'content "<html><body>Test</body></html>"
+              'url url
+              'links '("http://test.local/blog/post1"
+                      "http://test.local/about"
+                      "http://test.local/blog/post2"
+                      "http://test.local/contact")
+              'status 200)))
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-pattern-test)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 10
+                         #:url-pattern "/blog/"
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/blog/" crawler site-config)])
+      ;; Should only crawl /blog/ URLs
+      (check-true (site-crawl-result? result))))
+
+  ;; Test crawl-loop termination conditions
+  (test-case "crawl-loop terminates on empty queue"
+    (let* ([state (site-crawl-state
+                   '()  ; empty queue
+                   (set)
+                   (hash)
+                   0 0 (current-milliseconds)
+                   "test.local"
+                   (hash)
+                   #f)]
+           [config (make-site-crawl-config)]
+           [crawler-config (make-production-crawler-config)]
+           [crawler (create-production-crawler crawler-config)]
+           [final-state (crawl-loop state crawler config #f)])
+      ;; Should return immediately with empty queue
+      (check-equal? (site-crawl-state-pages-crawled final-state) 0)))
+
+  (test-case "crawl-loop terminates at max-pages"
+    (setup-mock-crawl-service)
+    (let* ([state (site-crawl-state
+                   '("http://test.local/")
+                   (set)
+                   (hash)
+                   0
+                   100  ; Already at max
+                   (current-milliseconds)
+                   "test.local"
+                   (hash)
+                   #f)]
+           [config (make-site-crawl-config #:max-pages 100)]
+           [crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test))]
+           [crawler (create-production-crawler crawler-config)]
+           [final-state (crawl-loop state crawler config #f)])
+      ;; Should not crawl more pages
+      (check-equal? (site-crawl-state-pages-crawled final-state) 100)))
+
+  (test-case "crawl-loop skips already visited URLs"
+    (setup-mock-crawl-service)
+    (let* ([state (site-crawl-state
+                   '("http://test.local/visited")
+                   (set "http://test.local/visited")  ; Already visited
+                   (hash)
+                   0 0 (current-milliseconds)
+                   "test.local"
+                   (hash)
+                   #f)]
+           [config (make-site-crawl-config #:max-pages 10 #:respect-robots #f)]
+           [crawler-config (make-production-crawler-config
+                            #:services '(mock-crawl-test))]
+           [crawler (create-production-crawler crawler-config)]
+           [final-state (crawl-loop state crawler config #f)])
+      ;; Should skip the visited URL
+      (check-equal? (site-crawl-state-pages-crawled final-state) 0)))
+
+  ;; Test with failing mock service
+  (test-case "crawl-site handles failed requests"
+    (register-service 'mock-failing
+      (lambda (url config)
+        #f))  ; Return #f to simulate failure
+    (let* ([crawler-config (make-production-crawler-config
+                            #:services '(mock-failing)
+                            #:fallback-enabled #f
+                            #:retry-attempts 1)]
+           [crawler (create-production-crawler crawler-config)]
+           [site-config (make-site-crawl-config
+                         #:max-pages 3
+                         #:respect-robots #f
+                         #:crawl-delay-ms 0)]
+           [result (crawl-site "http://test.local/" crawler site-config)])
+      ;; Should complete even with failures
+      (check-true (site-crawl-result? result))
+      (check-equal? (hash-ref (site-crawl-result-statistics result) 'pages-crawled) 0))))
