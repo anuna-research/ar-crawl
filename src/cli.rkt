@@ -13,6 +13,7 @@
          racket/pretty
          racket/system
          racket/port
+         racket/hash
          json
          net/url
          "production-crawler.rkt"
@@ -178,7 +179,13 @@
                   #:services [services '()]
                   #:verbose [verbose #f]
                   #:wait [wait #f]
-                  #:xpath [xpath #f])
+                  #:xpath [xpath #f]
+                  #:scroll [scroll #f]
+                  #:scroll-count [scroll-count 0]
+                  #:scroll-delay [scroll-delay 1000]
+                  #:click-selector [click-selector #f]
+                  #:click-count [click-count 1]
+                  #:pw-delay [delay 5000])
 
   (setup-crawler config-file verbose)
 
@@ -188,6 +195,23 @@
           (hash-set global-config 'crawler
                    (hash-set (hash-ref global-config 'crawler)
                             'services services))))
+
+  ;; Merge playwright options into service config
+  (define pw-config
+    (hash 'delay delay
+          'scroll scroll
+          'scroll-count scroll-count
+          'scroll-delay scroll-delay
+          'click-selector click-selector
+          'click-count click-count))
+
+  ;; Update services config with playwright options
+  (define current-services (hash-ref global-config 'services (hash)))
+  (define updated-pw-config
+    (hash-union (hash-ref current-services 'playwright (hash)) pw-config))
+  (set! global-config
+        (hash-set global-config 'services
+                 (hash-set current-services 'playwright updated-pw-config)))
 
   ;; Start playwright service if needed
   (define config-services (get-config-value global-config '(crawler services) '("direct")))
@@ -638,46 +662,53 @@
   (command-line
    #:program "ar-crawl"
    #:once-each
-   [("-v" "--verbose") "Verbose output"
+   [("--version") "Show version information"
+    (show-version)
+    (exit 0)]
+   [("-v" "--verbose") "Enable verbose output with detailed progress and debugging"
     (verbose-mode #t)]
-   [("-c" "--config") config-file "Configuration file"
+   [("-c" "--config") config-file "Path to JSON configuration file (auto-detected if not specified)"
     (config-file-path config-file)]
-   [("--max-pages") pages "Maximum pages to crawl (default: 50)"
+   [("--max-pages") pages "Maximum number of pages to crawl for crawl-site (default: 50)"
     (max-pages (string->number pages))]
-   [("--max-depth") depth "Maximum crawl depth (default: 3)"
+   [("--max-depth") depth "Maximum link-following depth for crawl-site (default: 3)"
     (max-depth (string->number depth))]
-   [("--url-pattern") pattern "URL regex pattern (default: \".*\")"
+   [("--url-pattern") pattern "Regex pattern to filter URLs, e.g. \"/blog/.*\" (default: \".*\")"
     (url-pattern pattern)]
-   [("--allow-external") "Allow crawling external domains"
+   [("--allow-external") "Allow following links to external domains (default: same-domain only)"
     (same-domain-only #f)]
-   [("--crawl-delay") delay "Delay between requests in ms (default: 1000)"
+   [("--crawl-delay") delay "Delay between requests in milliseconds (default: 1000)"
     (crawl-delay-ms (string->number delay))]
-   [("-o" "--output") file "Output file path"
+   [("-o" "--output") file "Save results to file instead of stdout (path to output file)"
     (output-file-param file)]
-   [("-f" "--format") fmt "Output format: json, csv, markdown, sqlite (default: json)"
-   (output-format-param (string->symbol fmt))]
-    [("--xpath") xpath "XPath expression to filter HTML content"
+   [("-f" "--format") fmt "Output format: json (default), csv, markdown, or sqlite"
+    (output-format-param (string->symbol fmt))]
+   [("--xpath") xpath "XPath expression to filter HTML content, e.g. \"//article\""
     (xpath-filter-param xpath)]
-   
+
+   ;; Playwright-specific options (only apply when using -s playwright)
+   [("--pw-scroll") "Scroll to bottom of page (for lazy-loaded content)"
+    (pw-scroll #t)]
+   [("--pw-scroll-count") count "Number of scroll iterations for infinite scroll (default: 0)"
+    (pw-scroll-count (string->number count))]
+   [("--pw-scroll-delay") delay "Delay between scrolls in ms (default: 1000)"
+    (pw-scroll-delay (string->number delay))]
+   [("--pw-click") selector "CSS selector to click (e.g., 'button.load-more')"
+    (pw-click-selector selector)]
+   [("--pw-click-count") count "Number of times to click selector (default: 1)"
+    (pw-click-count (string->number count))]
+   [("--pw-delay") delay "Delay after page load in ms for SPA rendering (default: 5000)"
+    (pw-delay (string->number delay))]
+
    #:multi
-   [("-s" "--service") service "Service to use (can be repeated)"
+   [("-s" "--service") service "Crawling service to use: direct, playwright, firecrawl, etc. (repeatable for fallback)"
     (selected-services (cons (string->symbol service) (selected-services)))]
    
    #:args args
-   
+
    (cond
      [(empty? args)
-      (printf "AR-Crawl - Production Web Crawler~n")
-      (printf "Usage: ar-crawl <command> [options] [args]~n~n")
-      (printf "Commands:~n")
-      (printf "  crawl <url>       Crawl a single URL~n")
-      (printf "  crawl-site <url>  Crawl an entire site following links~n")
-      (printf "  health            Check service health~n")
-      (printf "  test              Test services~n")
-      (printf "  config <cmd>      Manage configuration~n")
-      (printf "  services          List available services~n")
-       (printf "  monitor           Real-time monitoring~n~n")
-      (printf "Use --help with any command for more options.~n")]
+      (show-main-help)]
      
      [else
       (define command (string->symbol (car args)))
@@ -685,19 +716,31 @@
       
       (case command
         [(crawl)
-        (when (empty? command-args)
-        (error "URL required for crawl command"))
-        (cmd-crawl (car command-args)
-        #:config (config-file-path)
-        #:services (selected-services)
-        #:verbose (verbose-mode)
+         (when (empty? command-args)
+           (printf "Error: URL required for crawl command~n~n")
+           (printf "Usage: ar-crawl crawl <url> [options]~n")
+           (printf "Run 'ar-crawl help crawl' for more information.~n")
+           (exit 1))
+         (cmd-crawl (car command-args)
+                    #:config (config-file-path)
+                    #:services (selected-services)
+                    #:verbose (verbose-mode)
                     #:output (output-file-param)
                     #:format (output-format-param)
-                    #:xpath (xpath-filter-param))]
+                    #:xpath (xpath-filter-param)
+                    #:scroll (pw-scroll)
+                    #:scroll-count (pw-scroll-count)
+                    #:scroll-delay (pw-scroll-delay)
+                    #:click-selector (pw-click-selector)
+                    #:click-count (pw-click-count)
+                    #:pw-delay (pw-delay))]
         
         [(crawl-site)
          (when (empty? command-args)
-           (error "URL required for crawl-site command"))
+           (printf "Error: URL required for crawl-site command~n~n")
+           (printf "Usage: ar-crawl crawl-site <url> [options]~n")
+           (printf "Run 'ar-crawl help crawl-site' for more information.~n")
+           (exit 1))
 
          (cmd-crawl-site (car command-args)
          #:config (config-file-path)
@@ -722,7 +765,11 @@
         
         [(config)
          (when (empty? command-args)
-           (error "Config command required (init, show, validate)"))
+           (printf "Error: Subcommand required for config command~n~n")
+           (printf "Usage: ar-crawl config <subcommand>~n")
+           (printf "Subcommands: init, show, validate~n")
+           (printf "Run 'ar-crawl help config' for more information.~n")
+           (exit 1))
          (cmd-config (string->symbol (car command-args)))]
         
         [(services)
@@ -730,14 +777,367 @@
         
         [(monitor)
          (cmd-monitor #:config (config-file-path))]
-        
+
+        [(help)
+         (if (empty? command-args)
+             (show-main-help)
+             (show-command-help (car command-args)))]
+
+        [(version)
+         (show-version)]
+
         [else
-         (printf "Unknown command: ~a~n" command)])])))
+         (printf "Unknown command: ~a~n~n" command)
+         (printf "Run 'ar-crawl help' for usage information.~n")])])))
 
 ;; Initialize global parameters
 (define verbose-mode (make-parameter #f))
 (define config-file-path (make-parameter #f))
 (define selected-services (make-parameter '()))
+
+;; Playwright-specific parameters
+(define pw-scroll (make-parameter #f))
+(define pw-scroll-count (make-parameter 0))
+(define pw-scroll-delay (make-parameter 1000))
+(define pw-click-selector (make-parameter #f))
+(define pw-click-count (make-parameter 1))
+(define pw-delay (make-parameter 5000))
+
+;; Version info
+(define AR-CRAWL-VERSION "1.0.0")
+
+;; Help Documentation
+;; ------------------
+
+;; @function{show-version}
+;; @description{Display version information}
+(define (show-version)
+  (printf "ar-crawl ~a~n" AR-CRAWL-VERSION)
+  (printf "Production web crawler with service fallbacks~n")
+  (printf "Copyright (c) 2025 Anuna Research~n"))
+
+;; @function{show-main-help}
+;; @description{Display main help message with overview of all commands}
+(define (show-main-help)
+  (printf "~n")
+  (printf "AR-CRAWL - Production Web Crawler~n")
+  (printf "==================================~n~n")
+  (printf "A powerful web crawler with automatic service fallbacks, JavaScript rendering,~n")
+  (printf "and multiple output formats.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl <command> [options] [arguments]~n")
+  (printf "  ar-crawl --help~n")
+  (printf "  ar-crawl --version~n~n")
+
+  (printf "COMMANDS~n")
+  (printf "  crawl <url>         Crawl a single URL and extract content~n")
+  (printf "  crawl-site <url>    Crawl an entire website following links~n")
+  (printf "  health              Check health status of configured services~n")
+  (printf "  test [--service]    Test crawling services with a sample URL~n")
+  (printf "  config <subcommand> Manage configuration files~n")
+  (printf "  services            List all available crawling services~n")
+  (printf "  monitor             Start real-time monitoring dashboard~n")
+  (printf "  help [command]      Show help for a specific command~n~n")
+
+  (printf "GLOBAL OPTIONS~n")
+  (printf "  -v, --verbose       Enable verbose output with detailed logging~n")
+  (printf "  -c, --config FILE   Path to configuration file (auto-detected by default)~n")
+  (printf "      --help          Show this help message (also: ar-crawl help)~n")
+  (printf "      --version       Show version information~n~n")
+
+  (printf "QUICK START~n")
+  (printf "  # Crawl a single page~n")
+  (printf "  ar-crawl crawl https://example.com~n~n")
+  (printf "  # Crawl an entire site (max 100 pages)~n")
+  (printf "  ar-crawl crawl-site https://example.com --max-pages 100~n~n")
+  (printf "  # Save results to a file~n")
+  (printf "  ar-crawl crawl https://example.com -o results.json~n~n")
+  (printf "  # Use a specific crawling service~n")
+  (printf "  ar-crawl crawl https://example.com -s playwright~n~n")
+
+  (printf "Run 'ar-crawl help <command>' for detailed help on a specific command.~n~n"))
+
+;; @function{show-crawl-help}
+;; @description{Display help for the crawl command}
+(define (show-crawl-help)
+  (printf "~n")
+  (printf "AR-CRAWL CRAWL - Crawl a Single URL~n")
+  (printf "====================================~n~n")
+  (printf "Fetch and extract content from a single URL using configured crawling services.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl crawl <url> [options]~n~n")
+
+  (printf "ARGUMENTS~n")
+  (printf "  <url>               The URL to crawl (required)~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -s, --service SVC   Crawling service to use (can be repeated for fallback)~n")
+  (printf "                      Available: direct, playwright, firecrawl, scrapingbee,~n")
+  (printf "                                 browserless, scraperapi~n")
+  (printf "  -o, --output FILE   Save results to file instead of stdout~n")
+  (printf "  -f, --format FMT    Output format: json (default), csv, markdown, sqlite~n")
+  (printf "      --xpath EXPR    XPath expression to filter HTML content~n")
+  (printf "  -c, --config FILE   Configuration file path~n")
+  (printf "  -v, --verbose       Show detailed progress and debugging info~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Basic crawl~n")
+  (printf "  ar-crawl crawl https://example.com~n~n")
+  (printf "  # Crawl with JavaScript rendering using Playwright~n")
+  (printf "  ar-crawl crawl https://spa-website.com -s playwright~n~n")
+  (printf "  # Save as JSON with verbose output~n")
+  (printf "  ar-crawl crawl https://example.com -o page.json -v~n~n")
+  (printf "  # Extract only article content using XPath~n")
+  (printf "  ar-crawl crawl https://blog.com/post --xpath \"//article\"~n~n")
+  (printf "  # Use multiple services with automatic fallback~n")
+  (printf "  ar-crawl crawl https://example.com -s firecrawl -s playwright -s direct~n~n")
+
+  (printf "SERVICES~n")
+  (printf "  direct       Built-in HTTP client (no API key required)~n")
+  (printf "  playwright   Local browser rendering for JavaScript-heavy sites~n")
+  (printf "  firecrawl    Cloud-based content extraction API~n")
+  (printf "  scrapingbee  Cloud scraping with JavaScript rendering~n")
+  (printf "  browserless  Remote browser automation~n")
+  (printf "  scraperapi   Proxy rotation and CAPTCHA handling~n~n"))
+
+;; @function{show-crawl-site-help}
+;; @description{Display help for the crawl-site command}
+(define (show-crawl-site-help)
+  (printf "~n")
+  (printf "AR-CRAWL CRAWL-SITE - Crawl an Entire Website~n")
+  (printf "==============================================~n~n")
+  (printf "Recursively crawl a website following links up to specified depth and page limits.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl crawl-site <url> [options]~n~n")
+
+  (printf "ARGUMENTS~n")
+  (printf "  <url>                  Starting URL for the crawl (required)~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "      --max-pages N      Maximum number of pages to crawl (default: 50)~n")
+  (printf "      --max-depth N      Maximum link-following depth (default: 3)~n")
+  (printf "      --url-pattern RE   Regex pattern to filter URLs (default: \".*\")~n")
+  (printf "      --allow-external   Allow crawling links to external domains~n")
+  (printf "      --crawl-delay MS   Delay between requests in milliseconds (default: 1000)~n")
+  (printf "  -s, --service SVC      Crawling service to use (can be repeated)~n")
+  (printf "  -o, --output FILE      Save results to file~n")
+  (printf "  -f, --format FMT       Output format: json, csv, markdown, sqlite~n")
+  (printf "      --xpath EXPR       XPath expression to filter content~n")
+  (printf "  -c, --config FILE      Configuration file path~n")
+  (printf "  -v, --verbose          Show detailed progress~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Crawl a site with default settings~n")
+  (printf "  ar-crawl crawl-site https://docs.example.com~n~n")
+  (printf "  # Crawl up to 200 pages, 5 levels deep~n")
+  (printf "  ar-crawl crawl-site https://example.com --max-pages 200 --max-depth 5~n~n")
+  (printf "  # Only crawl blog posts matching a pattern~n")
+  (printf "  ar-crawl crawl-site https://blog.com --url-pattern \"/posts/.*\"~n~n")
+  (printf "  # Save to SQLite database for analysis~n")
+  (printf "  ar-crawl crawl-site https://example.com -o results.db -f sqlite~n~n")
+  (printf "  # Slower crawl with 2-second delay (be respectful!)~n")
+  (printf "  ar-crawl crawl-site https://example.com --crawl-delay 2000~n~n")
+  (printf "  # Include external links~n")
+  (printf "  ar-crawl crawl-site https://example.com --allow-external~n~n")
+
+  (printf "NOTES~n")
+  (printf "  - By default, only same-domain URLs are followed~n")
+  (printf "  - Use --crawl-delay to avoid overwhelming target servers~n")
+  (printf "  - The --url-pattern option accepts Racket regex syntax~n")
+  (printf "  - Progress is shown in verbose mode with [current/total] prefix~n~n"))
+
+;; @function{show-health-help}
+;; @description{Display help for the health command}
+(define (show-health-help)
+  (printf "~n")
+  (printf "AR-CRAWL HEALTH - Check Service Health~n")
+  (printf "=======================================~n~n")
+  (printf "Check the health and availability of all configured crawling services.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl health [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -c, --config FILE   Configuration file path~n")
+  (printf "  -v, --verbose       Show detailed health information~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Quick health check~n")
+  (printf "  ar-crawl health~n~n")
+  (printf "  # Detailed health report~n")
+  (printf "  ar-crawl health -v~n~n")
+
+  (printf "OUTPUT~n")
+  (printf "  Shows overall status, uptime, and per-service health indicators:~n")
+  (printf "    ✓ Healthy    - Service is responding normally~n")
+  (printf "    ✗ Unhealthy  - Service is unavailable or erroring~n~n"))
+
+;; @function{show-test-help}
+;; @description{Display help for the test command}
+(define (show-test-help)
+  (printf "~n")
+  (printf "AR-CRAWL TEST - Test Crawling Services~n")
+  (printf "=======================================~n~n")
+  (printf "Test individual or all crawling services by fetching a sample URL.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl test [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "      --service SVC   Test only a specific service~n")
+  (printf "  -c, --config FILE   Configuration file path~n")
+  (printf "  -v, --verbose       Show response details (content length, links found)~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Test all configured services~n")
+  (printf "  ar-crawl test~n~n")
+  (printf "  # Test only the playwright service~n")
+  (printf "  ar-crawl test --service playwright~n~n")
+  (printf "  # Verbose test with response details~n")
+  (printf "  ar-crawl test -v~n~n")
+
+  (printf "OUTPUT~n")
+  (printf "  For each service, shows:~n")
+  (printf "    ✓ Success (Nms)  - Service works, with response time~n")
+  (printf "    ✗ Failed         - Service is not working~n~n"))
+
+;; @function{show-config-help}
+;; @description{Display help for the config command}
+(define (show-config-help)
+  (printf "~n")
+  (printf "AR-CRAWL CONFIG - Manage Configuration~n")
+  (printf "=======================================~n~n")
+  (printf "Create, view, and validate configuration files.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl config <subcommand> [options]~n~n")
+
+  (printf "SUBCOMMANDS~n")
+  (printf "  init      Create a new configuration file with defaults~n")
+  (printf "  show      Display the contents of a configuration file~n")
+  (printf "  validate  Check if a configuration file is valid~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  --file FILE   Configuration file path (default: config/default.json)~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Create a new default configuration~n")
+  (printf "  ar-crawl config init~n~n")
+  (printf "  # Create config in a custom location~n")
+  (printf "  ar-crawl config init --file myconfig.json~n~n")
+  (printf "  # View current configuration~n")
+  (printf "  ar-crawl config show~n~n")
+  (printf "  # Validate a configuration file~n")
+  (printf "  ar-crawl config validate --file production.json~n~n")
+
+  (printf "CONFIGURATION FILE FORMAT~n")
+  (printf "  Configuration uses JSON format with the following structure:~n~n")
+  (printf "  {~n")
+  (printf "    \"crawler\": {~n")
+  (printf "      \"services\": [\"direct\", \"playwright\"],~n")
+  (printf "      \"fallback_enabled\": true,~n")
+  (printf "      \"rate_limit_ms\": 1000,~n")
+  (printf "      \"retry_attempts\": 3,~n")
+  (printf "      \"timeout_ms\": 30000~n")
+  (printf "    },~n")
+  (printf "    \"services\": {~n")
+  (printf "      \"firecrawl\": { \"api_key\": \"your-key\" }~n")
+  (printf "    }~n")
+  (printf "  }~n~n"))
+
+;; @function{show-services-help}
+;; @description{Display help for the services command}
+(define (show-services-help)
+  (printf "~n")
+  (printf "AR-CRAWL SERVICES - List Available Services~n")
+  (printf "============================================~n~n")
+  (printf "Display all available crawling services and their status.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl services [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -v, --verbose   Check and display availability status for each service~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # List available services~n")
+  (printf "  ar-crawl services~n~n")
+  (printf "  # List services with availability status~n")
+  (printf "  ar-crawl services -v~n~n")
+
+  (printf "AVAILABLE SERVICES~n")
+  (printf "  direct       Built-in HTTP client~n")
+  (printf "               - No API key required~n")
+  (printf "               - Fast for simple HTML pages~n")
+  (printf "               - No JavaScript support~n~n")
+  (printf "  playwright   Local browser rendering~n")
+  (printf "               - Full JavaScript execution~n")
+  (printf "               - Requires Node.js~n")
+  (printf "               - Best for SPAs and dynamic content~n~n")
+  (printf "  firecrawl    Cloud extraction service~n")
+  (printf "               - Requires API key (FIRECRAWL_API_KEY)~n")
+  (printf "               - Good content extraction~n")
+  (printf "               - Handles complex pages~n~n")
+  (printf "  scrapingbee  Cloud scraping service~n")
+  (printf "               - Requires API key (SCRAPINGBEE_API_KEY)~n")
+  (printf "               - JavaScript rendering~n")
+  (printf "               - Proxy rotation~n~n")
+  (printf "  browserless  Remote browser automation~n")
+  (printf "               - Requires API key (BROWSERLESS_API_KEY)~n")
+  (printf "               - Full browser control~n~n")
+  (printf "  scraperapi   Proxy and CAPTCHA service~n")
+  (printf "               - Requires API key (SCRAPERAPI_API_KEY)~n")
+  (printf "               - Automatic proxy rotation~n")
+  (printf "               - CAPTCHA solving~n~n"))
+
+;; @function{show-monitor-help}
+;; @description{Display help for the monitor command}
+(define (show-monitor-help)
+  (printf "~n")
+  (printf "AR-CRAWL MONITOR - Real-time Monitoring Dashboard~n")
+  (printf "==================================================~n~n")
+  (printf "Display a live dashboard showing crawler status and metrics.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl monitor [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -c, --config FILE    Configuration file path~n")
+  (printf "      --interval SEC   Dashboard refresh interval in seconds (default: 5)~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Start monitoring with defaults~n")
+  (printf "  ar-crawl monitor~n~n")
+  (printf "  # Fast refresh (every 2 seconds)~n")
+  (printf "  ar-crawl monitor --interval 2~n~n")
+
+  (printf "DASHBOARD DISPLAYS~n")
+  (printf "  - Overall crawler status~n")
+  (printf "  - Active/total job counts~n")
+  (printf "  - Success rate percentage~n")
+  (printf "  - Average response time~n")
+  (printf "  - Per-service health indicators~n")
+  (printf "  - Last update timestamp~n~n")
+  (printf "Press Ctrl+C to exit the monitoring dashboard.~n~n"))
+
+;; @function{show-command-help}
+;; @description{Show help for a specific command}
+(define (show-command-help command)
+  (case (if (string? command) (string->symbol command) command)
+    [(crawl) (show-crawl-help)]
+    [(crawl-site) (show-crawl-site-help)]
+    [(health) (show-health-help)]
+    [(test) (show-test-help)]
+    [(config) (show-config-help)]
+    [(services) (show-services-help)]
+    [(monitor) (show-monitor-help)]
+    [else
+     (printf "Unknown command: ~a~n~n" command)
+     (printf "Available commands: crawl, crawl-site, health, test, config, services, monitor~n")
+     (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters
 (define max-pages (make-parameter 50))
