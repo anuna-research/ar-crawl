@@ -85,7 +85,7 @@ ar-crawl -s playwright -v crawl-site https://react-app.com --max-pages 20
 make run ARGS='crawl https://example.com'
 
 # Or save directly to SQLite database
-racket src/cli.rkt --output results.db --format sqlite crawl https://example.com
+racket src/cli.rkt crawl https://example.com --output results.db --format sqlite
 ```
 
 **🕷️ Crawl an entire site:**
@@ -94,8 +94,8 @@ racket src/cli.rkt --output results.db --format sqlite crawl https://example.com
 racket src/cli.rkt crawl-site https://example.com
 
 # Advanced site crawl with filtering and limits
-racket src/cli.rkt --verbose --output output/site-results.json \
-  crawl-site https://example.com \
+racket src/cli.rkt crawl-site https://example.com \
+  --verbose --output output/site-results.json \
   --max-pages 50 \
   --url-pattern ".*example\.com.*(blog|news).*" \
   --crawl-delay 1000
@@ -125,7 +125,7 @@ make run ARGS='test --verbose'
   ar-crawl crawl https://example.com --output results.json --verbose
   
   # Save to SQLite database for analysis
-  ar-crawl --output results.db --format sqlite crawl https://example.com
+  ar-crawl crawl https://example.com --output results.db --format sqlite
   ```
 
 - **`crawl-site <url>`** - Crawl an entire site with link following
@@ -134,15 +134,15 @@ make run ARGS='test --verbose'
   ar-crawl crawl-site https://example.com
 
   # Advanced site crawl with options
-  ar-crawl --verbose --output output/results.json \
-    crawl-site https://example.com \
+  ar-crawl crawl-site https://example.com \
+    --verbose --output output/results.json \
     --max-pages 100 \
     --url-pattern ".*blog.*" \
     --crawl-delay 2000
 
   # Save site crawl to SQLite for advanced analysis
-  ar-crawl --output site-data.db --format sqlite \
-    crawl-site https://example.com \
+  ar-crawl crawl-site https://example.com \
+    --output site-data.db --format sqlite \
     --max-pages 50 \
     --url-pattern ".*blog.*"
   ```
@@ -185,8 +185,9 @@ make run ARGS='test --verbose'
     --fields '{"name": ".//h2", "price": ".//span[@class=\"price\"]"}'
 
   # Save extracted data to CSV
-  ar-crawl --output extracted.csv --format csv \
-    extract results.json --xpath-map '{"title": "//h1"}'
+  ar-crawl extract results.json \
+    --output extracted.csv --format csv \
+    --xpath-map '{"title": "//h1"}'
   ```
 
 - **`health`** - Check service health status
@@ -228,14 +229,12 @@ make run ARGS='test --verbose'
 
 ### Command Options
 
-#### Global Options (must come before command)
+#### Global Options
 - **`--config <file>`** - Specify configuration file
-- **`--verbose`** - Enable verbose output and progress tracking
-- **`--output <file>`** - Save results to file
+- **`--verbose, -v`** - Enable verbose output and progress tracking
+- **`--output, -o <file>`** - Save results to file
 - **`--format <type>`** - Output format (json, csv, markdown, sqlite)
-
-#### Service Options
-- **`--service <name>`** - Use specific service (can be repeated)
+- **`--service, -s <name>`** - Use specific service (can be repeated)
 
 #### Site Crawling Options
 - **`--max-pages <num>`** - Maximum pages to crawl (default: 50)
@@ -252,15 +251,6 @@ make run ARGS='test --verbose'
 - **`--xpath-map <json>`** - JSON object mapping field names to XPath expressions
 - **`--parent <xpath>`** - Parent XPath for item extraction (use with --fields)
 - **`--fields <json>`** - JSON object mapping field names to relative XPaths (use with --parent)
-
-**⚠️ Important:** Global options like `--verbose`, `--output` must come **before** the command name:
-```bash
-# ✅ CORRECT
-racket src/cli.rkt --verbose --output results.json crawl-site https://example.com
-
-# ❌ WRONG
-racket src/cli.rkt crawl-site https://example.com --verbose --output results.json
-```
 
 ## Site Crawling
 
@@ -299,22 +289,22 @@ racket src/cli.rkt crawl-site https://news-site.com \
 
 ```bash
 # Save comprehensive results with progress tracking
-racket src/cli.rkt --verbose --output output/crawl-results.json \
-  crawl-site https://example.com \
+racket src/cli.rkt crawl-site https://example.com \
+  --verbose --output output/crawl-results.json \
   --max-pages 50 \
   --crawl-delay 2000
 
 # Export as CSV for analysis
-racket src/cli.rkt --output results.csv --format csv \
-  crawl-site https://example.com --max-pages 25
+racket src/cli.rkt crawl-site https://example.com \
+  --output results.csv --format csv --max-pages 25
 
 # Generate Markdown report
-racket src/cli.rkt --output report.md --format markdown \
-  crawl-site https://example.com --max-pages 30
+racket src/cli.rkt crawl-site https://example.com \
+  --output report.md --format markdown --max-pages 30
 
 # Save to SQLite database (compact, queryable)
-racket src/cli.rkt --output crawl-data.db --format sqlite \
-  crawl-site https://example.com --max-pages 50
+racket src/cli.rkt crawl-site https://example.com \
+  --output crawl-data.db --format sqlite --max-pages 50
 ```
 
 ### Real-World Examples
@@ -322,15 +312,15 @@ racket src/cli.rkt --output crawl-data.db --format sqlite \
 #### Legal Database Crawling (AustLII)
 ```bash
 # Crawl Australian legal cases to JSON
-racket src/cli.rkt --verbose --output output/austlii-cases.json \
-  crawl-site https://www.austlii.edu.au/ \
+racket src/cli.rkt crawl-site https://www.austlii.edu.au/ \
+  --verbose --output output/austlii-cases.json \
   --max-pages 50 \
   --url-pattern ".*austlii\.edu\.au.*(cases|HCA).*" \
   --crawl-delay 2000
 
 # Crawl to SQLite for legal research analysis
-racket src/cli.rkt --verbose --output output/austlii-cases.db --format sqlite \
-  crawl-site https://www.austlii.edu.au/ \
+racket src/cli.rkt crawl-site https://www.austlii.edu.au/ \
+  --verbose --output output/austlii-cases.db --format sqlite \
   --max-pages 50 \
   --url-pattern ".*austlii\.edu\.au.*(cases|HCA).*" \
   --crawl-delay 2000
@@ -339,15 +329,15 @@ racket src/cli.rkt --verbose --output output/austlii-cases.db --format sqlite \
 #### Academic Research
 ```bash
 # Crawl university research pages to JSON
-racket src/cli.rkt --verbose --output output/research.json \
-  crawl-site https://university.edu/research/ \
+racket src/cli.rkt crawl-site https://university.edu/research/ \
+  --verbose --output output/research.json \
   --url-pattern ".*(research|publications|papers).*" \
   --max-pages 75 \
   --crawl-delay 1500
 
 # Crawl to SQLite for research analysis and citation tracking
-racket src/cli.rkt --verbose --output output/research.db --format sqlite \
-  crawl-site https://university.edu/research/ \
+racket src/cli.rkt crawl-site https://university.edu/research/ \
+  --verbose --output output/research.db --format sqlite \
   --url-pattern ".*(research|publications|papers).*" \
   --max-pages 75 \
   --crawl-delay 1500
@@ -356,15 +346,15 @@ racket src/cli.rkt --verbose --output output/research.db --format sqlite \
 #### News and Media Sites
 ```bash
 # Crawl recent news articles to JSON
-racket src/cli.rkt --verbose --output output/news.json \
-  crawl-site https://news-site.com \
+racket src/cli.rkt crawl-site https://news-site.com \
+  --verbose --output output/news.json \
   --url-pattern ".*/(202[4-5]|latest|breaking).*" \
   --max-pages 100 \
   --crawl-delay 1000
 
 # Crawl to SQLite for news analysis and trend tracking
-racket src/cli.rkt --verbose --output output/news.db --format sqlite \
-  crawl-site https://news-site.com \
+racket src/cli.rkt crawl-site https://news-site.com \
+  --verbose --output output/news.db --format sqlite \
   --url-pattern ".*/(202[4-5]|latest|breaking).*" \
   --max-pages 100 \
   --crawl-delay 1000
@@ -423,15 +413,15 @@ AR-Crawl supports SQLite database output as a powerful, queryable alternative to
 
 ```bash
 # Crawl single URL to SQLite
-racket src/cli.rkt --output results.db --format sqlite crawl https://example.com
+racket src/cli.rkt crawl https://example.com --output results.db --format sqlite
 
 # Crawl entire site to database
-racket src/cli.rkt --output site-data.db --format sqlite \
-  crawl-site https://news-site.com --max-pages 100
+racket src/cli.rkt crawl-site https://news-site.com \
+  --output site-data.db --format sqlite --max-pages 100
 
 # Crawl with filters and save to SQLite
-racket src/cli.rkt --output research.db --format sqlite \
-  crawl-site https://university.edu \
+racket src/cli.rkt crawl-site https://university.edu \
+  --output research.db --format sqlite \
   --url-pattern ".*research.*" \
   --max-pages 50
 ```
@@ -685,15 +675,16 @@ AR-Crawl provides a two-step workflow for structured data extraction: first craw
 
 ```bash
 # Step 1: Crawl the site and save results
-ar-crawl --output products.json crawl-site https://shop.example.com \
+ar-crawl crawl-site https://shop.example.com \
+  --output products.json \
   --url-pattern ".*product.*" --max-pages 50
 
 # Step 2: Explore the HTML structure
 ar-crawl sample products.json
 
 # Step 3: Extract structured data using XPath
-ar-crawl --output extracted.csv --format csv \
-  extract products.json \
+ar-crawl extract products.json \
+  --output extracted.csv --format csv \
   --parent "//div[@class='product']" \
   --fields '{"name": ".//h2", "price": ".//span[@class=\"price\"]"}'
 ```
@@ -749,13 +740,13 @@ ar-crawl extract results.json \
 
 ```bash
 # JSON output (default)
-ar-crawl --output data.json extract results.json --xpath-map '...'
+ar-crawl extract results.json --output data.json --xpath-map '...'
 
 # CSV for spreadsheets
-ar-crawl --output data.csv --format csv extract results.json --xpath-map '...'
+ar-crawl extract results.json --output data.csv --format csv --xpath-map '...'
 
 # SQLite for analysis
-ar-crawl --output data.db --format sqlite extract results.json --xpath-map '...'
+ar-crawl extract results.json --output data.db --format sqlite --xpath-map '...'
 ```
 
 ### Real-World Extraction Examples
@@ -763,12 +754,13 @@ ar-crawl --output data.db --format sqlite extract results.json --xpath-map '...'
 #### E-commerce Product Extraction
 ```bash
 # Crawl product pages
-ar-crawl --output shop.json crawl-site https://shop.example.com \
+ar-crawl crawl-site https://shop.example.com \
+  --output shop.json \
   --url-pattern ".*product.*" --max-pages 100
 
 # Extract product data
-ar-crawl --output products.csv --format csv \
-  extract shop.json \
+ar-crawl extract shop.json \
+  --output products.csv --format csv \
   --parent "//div[@class='product']" \
   --fields '{
     "name": ".//h2[@class=\"title\"]/text()",
@@ -780,12 +772,14 @@ ar-crawl --output products.csv --format csv \
 #### News Article Extraction
 ```bash
 # Crawl news articles
-ar-crawl --output news.json crawl-site https://news.example.com \
+ar-crawl crawl-site https://news.example.com \
+  --output news.json \
   --url-pattern ".*/article/.*" --max-pages 50
 
 # Extract article metadata
-ar-crawl --output articles.json \
-  extract news.json --xpath-map '{
+ar-crawl extract news.json \
+  --output articles.json \
+  --xpath-map '{
     "headline": "//h1",
     "author": "//span[@class=\"byline\"]",
     "published": "//time/@datetime",
