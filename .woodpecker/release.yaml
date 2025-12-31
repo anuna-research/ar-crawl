@@ -484,11 +484,10 @@ steps:
       - ls -la dist/
 
   - name: publish-release
-    image: plugins/gitea-release
+    image: woodpeckerci/plugin-release
     settings:
       api_key:
         from_secret: codeberg_token
-      base_url: https://codeberg.org/api/v1
       files:
         - dist/ar-crawl-linux-*.tar.gz
         - dist/ar-crawl-macos-*.tar.gz
