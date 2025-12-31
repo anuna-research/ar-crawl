@@ -486,6 +486,7 @@ steps:
   - name: publish-release
     image: woodpeckerci/plugin-release
     settings:
+      base_url: https://codeberg.org
       api_key:
         from_secret: codeberg_token
       files:
