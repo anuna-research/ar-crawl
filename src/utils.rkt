@@ -58,7 +58,6 @@
   
   ;; Hash utilities
   [deep-merge-hash (-> hash? hash? hash?)]
-  [hash-filter (-> hash? procedure? hash?)]
   [hash-map-values (-> hash? procedure? hash?)]
   
   ;; File system utilities
@@ -333,15 +332,6 @@
                  (deep-merge-hash (hash-ref result k) v)]
                 [else v]))))
 
-;; @function{hash-filter}
-;; @description{Filter hash by predicate}
-;; @param[h]{hash?} Hash to filter
-;; @param[pred]{procedure?} Predicate (key value -> boolean)
-;; @returns{hash?} Filtered hash
-(define (hash-filter h pred)
-  (for/hash ([(k v) (in-hash h)]
-             #:when (pred k v))
-    (values k v)))
 
 ;; @function{hash-map-values}
 ;; @description{Map function over hash values}
@@ -620,11 +610,6 @@ Focus on:
       (check-equal? (hash-ref (hash-ref result 'b) 'x) 1)
       (check-equal? (hash-ref (hash-ref result 'b) 'y) 2)))
 
-  (test-case "hash-filter filters by predicate"
-    (let ([result (hash-filter (hash 'a 1 'b 2 'c 3)
-                               (lambda (k v) (> v 1)))])
-      (check-equal? (hash-count result) 2)
-      (check-false (hash-has-key? result 'a))))
 
   (test-case "hash-map-values transforms values"
     (let ([result (hash-map-values (hash 'a 1 'b 2) add1)])
