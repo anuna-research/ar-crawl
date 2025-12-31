@@ -489,6 +489,7 @@ steps:
       base_url: https://codeberg.org
       api_key:
         from_secret: codeberg_token
+      target: ${CI_COMMIT_SHA}
       files:
         - dist/ar-crawl-linux-*.tar.gz
         - dist/ar-crawl-macos-*.tar.gz
