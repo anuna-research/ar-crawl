@@ -2172,7 +2172,7 @@
 ;; Run main if this file is executed directly
 (module+ main
   ;; Register cleanup handler for playwright service
-  (plumber-add-flush! (current-plumber)
-                      (lambda (handle)
-                        (stop-playwright-service)))
+  (void (plumber-add-flush! (current-plumber)
+                            (lambda (handle)
+                              (stop-playwright-service))))
   (main))
