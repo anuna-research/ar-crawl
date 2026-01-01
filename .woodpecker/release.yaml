@@ -516,35 +516,35 @@ steps:
       - export PROJECT="ar-crawl"
 
       # Upload versioned release
-      - echo "Uploading to ${PROJECT}/${CI_COMMIT_TAG}/..."
+      - echo "Uploading to $${PROJECT}/$${CI_COMMIT_TAG}/..."
       - |
         for file in dist/ar-crawl-*.tar.gz dist/version.json dist/install.sh; do
-          if [ -f "$file" ]; then
-            filename=$(basename "$file")
-            aws s3 cp "$file" "s3://${BUCKET}/${PROJECT}/${CI_COMMIT_TAG}/$filename" \
-              --endpoint-url "$R2_ENDPOINT"
-            echo "Uploaded: $filename"
+          if [ -f "$$file" ]; then
+            filename=$$(basename "$$file")
+            aws s3 cp "$$file" "s3://$${BUCKET}/$${PROJECT}/$${CI_COMMIT_TAG}/$$filename" \
+              --endpoint-url "$$R2_ENDPOINT"
+            echo "Uploaded: $$filename"
           fi
         done
 
       # Upload to latest/
-      - echo "Uploading to ${PROJECT}/latest/..."
+      - echo "Uploading to $${PROJECT}/latest/..."
       - |
         for file in dist/ar-crawl-*.tar.gz dist/version.json dist/install.sh; do
-          if [ -f "$file" ]; then
-            filename=$(basename "$file")
-            aws s3 cp "$file" "s3://${BUCKET}/${PROJECT}/latest/$filename" \
-              --endpoint-url "$R2_ENDPOINT"
-            echo "Uploaded to latest: $filename"
+          if [ -f "$$file" ]; then
+            filename=$$(basename "$$file")
+            aws s3 cp "$$file" "s3://$${BUCKET}/$${PROJECT}/latest/$$filename" \
+              --endpoint-url "$$R2_ENDPOINT"
+            echo "Uploaded to latest: $$filename"
           fi
         done
 
       # List uploaded files
-      - echo "Files in ${PROJECT}/${CI_COMMIT_TAG}:"
-      - aws s3 ls "s3://${BUCKET}/${PROJECT}/${CI_COMMIT_TAG}/" --endpoint-url "$R2_ENDPOINT"
-      - echo "Files in ${PROJECT}/latest:"
-      - aws s3 ls "s3://${BUCKET}/${PROJECT}/latest/" --endpoint-url "$R2_ENDPOINT"
+      - echo "Files in $${PROJECT}/$${CI_COMMIT_TAG}:"
+      - aws s3 ls "s3://$${BUCKET}/$${PROJECT}/$${CI_COMMIT_TAG}/" --endpoint-url "$$R2_ENDPOINT"
+      - echo "Files in $${PROJECT}/latest:"
+      - aws s3 ls "s3://$${BUCKET}/$${PROJECT}/latest/" --endpoint-url "$$R2_ENDPOINT"
       - echo ""
       - echo "Release available at:"
-      - echo "  https://files.anuna.io/${PROJECT}/${CI_COMMIT_TAG}/"
-      - echo "  https://files.anuna.io/${PROJECT}/latest/"
+      - echo "  https://files.anuna.io/$${PROJECT}/$${CI_COMMIT_TAG}/"
+      - echo "  https://files.anuna.io/$${PROJECT}/latest/"
