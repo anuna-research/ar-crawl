@@ -229,20 +229,19 @@ setup_playwright() {
   step "Installing Playwright npm dependencies..."
   cd "$LIB_DIR/playwright-service"
 
-  if npm install --silent 2>/dev/null; then
+  if npm install; then
     info "npm dependencies installed"
   else
     warn "npm install failed. Try manually: cd $LIB_DIR/playwright-service && npm install"
     return
   fi
 
-  # Install Chromium browser
-  step "Installing Chromium browser for Playwright..."
-  if npx playwright install chromium 2>/dev/null; then
+  # Note: Chromium is installed automatically via postinstall script in package.json
+  # Verify it was installed
+  if [[ -d "$HOME/.cache/ms-playwright" ]] || [[ -d "$HOME/Library/Caches/ms-playwright" ]]; then
     info "Chromium browser installed"
   else
-    warn "Chromium install failed. Try manually: cd $LIB_DIR/playwright-service && npx playwright install chromium"
-    return
+    warn "Chromium may not have installed. Try: cd $LIB_DIR/playwright-service && npx playwright install chromium"
   fi
 
   info "Playwright service setup complete!"
