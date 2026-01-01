@@ -3,6 +3,15 @@ when:
     branch: main
 
 steps:
+  - name: test-secrets
+    image: alpine
+    environment:
+      TEST_SECRET:
+        from_secret: cf_account_id
+    commands:
+      - 'echo "TEST_SECRET length: ${#TEST_SECRET}"'
+      - 'echo "TEST_SECRET first 4: ${TEST_SECRET:0:4}"'
+
   - name: build-executables
     image: racket/racket:8.16-full
     commands:
