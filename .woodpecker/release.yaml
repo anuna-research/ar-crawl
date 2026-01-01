@@ -496,10 +496,10 @@ steps:
         from_secret: cf_account_id
     commands:
       # Debug: Check if secrets are populated
-      - echo "CF_ACCOUNT_ID length: ${#CF_ACCOUNT_ID}"
-      - echo "CF_ACCOUNT_ID first 4 chars: ${CF_ACCOUNT_ID:0:4}..."
-      - echo "AWS_ACCESS_KEY_ID length: ${#AWS_ACCESS_KEY_ID}"
-      - echo "AWS_SECRET_ACCESS_KEY length: ${#AWS_SECRET_ACCESS_KEY}"
+      - 'echo "CF_ACCOUNT_ID length: ${#CF_ACCOUNT_ID}"'
+      - 'echo "CF_ACCOUNT_ID first 4 chars: ${CF_ACCOUNT_ID:0:4}"'
+      - 'echo "AWS_ACCESS_KEY_ID length: ${#AWS_ACCESS_KEY_ID}"'
+      - 'echo "AWS_SECRET_ACCESS_KEY length: ${#AWS_SECRET_ACCESS_KEY}"'
 
       # Configure AWS CLI for Cloudflare R2
       - export AWS_DEFAULT_REGION=auto
