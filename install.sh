@@ -33,8 +33,16 @@ step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # Detect OS and architecture
 detect_platform() {
-  OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  ARCH="$(uname -m)"
+  OS="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')" || true
+  ARCH="$(uname -m 2>/dev/null)" || true
+
+  if [[ -z "$OS" ]]; then
+    error "Could not detect operating system (uname -s failed)"
+  fi
+
+  if [[ -z "$ARCH" ]]; then
+    error "Could not detect architecture (uname -m failed)"
+  fi
 
   case "$OS" in
     linux*)  OS="linux" ;;
