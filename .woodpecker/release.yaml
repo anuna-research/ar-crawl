@@ -9,7 +9,7 @@ steps:
       TEST_SECRET:
         from_secret: cf_account_id
     commands:
-      - 'if [ -n "$TEST_SECRET" ]; then echo "SECRET IS SET"; else echo "SECRET IS EMPTY"; fi'
+      - 'if [ -n "$$TEST_SECRET" ]; then echo "SECRET IS SET"; else echo "SECRET IS EMPTY"; fi'
 
   - name: build-executables
     image: racket/racket:8.16-full
@@ -504,14 +504,14 @@ steps:
         from_secret: cf_account_id
     commands:
       # Debug: Check if secrets are populated
-      - 'echo "CF_ACCOUNT_ID length: ${#CF_ACCOUNT_ID}"'
-      - 'echo "CF_ACCOUNT_ID first 4 chars: ${CF_ACCOUNT_ID:0:4}"'
-      - 'echo "AWS_ACCESS_KEY_ID length: ${#AWS_ACCESS_KEY_ID}"'
-      - 'echo "AWS_SECRET_ACCESS_KEY length: ${#AWS_SECRET_ACCESS_KEY}"'
+      - 'echo "CF_ACCOUNT_ID length: $${#CF_ACCOUNT_ID}"'
+      - 'echo "CF_ACCOUNT_ID first 4 chars: $${CF_ACCOUNT_ID:0:4}"'
+      - 'echo "AWS_ACCESS_KEY_ID length: $${#AWS_ACCESS_KEY_ID}"'
+      - 'echo "AWS_SECRET_ACCESS_KEY length: $${#AWS_SECRET_ACCESS_KEY}"'
 
       # Configure AWS CLI for Cloudflare R2
       - export AWS_DEFAULT_REGION=auto
-      - export R2_ENDPOINT="https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com"
+      - export R2_ENDPOINT="https://$${CF_ACCOUNT_ID}.r2.cloudflarestorage.com"
       - export BUCKET="anuna-files"
       - export PROJECT="ar-crawl"
 
