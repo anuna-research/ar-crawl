@@ -687,7 +687,8 @@
 ;; @function{output-site-results}
 ;; @description{Output site crawl results to file}
 (define (output-site-results results output-file format verbose)
-  (ensure-directory (path-only output-file))
+  (define dir (path-only output-file))
+  (when dir (ensure-directory dir))
   
   (case format
     [(sqlite)
