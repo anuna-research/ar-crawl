@@ -395,8 +395,10 @@
         (lambda (port)
           (string->jsexpr (port->string port))))))
 
-  ;; Get items to process
-  (define items (hash-ref input-data 'data '()))
+  ;; Get items to process (support both 'data' and 'pages' keys)
+  (define items (or (hash-ref input-data 'data #f)
+                    (hash-ref input-data 'pages #f)
+                    '()))
 
   (when verbose
     (printf "Found ~a items to process~n" (length items)))
