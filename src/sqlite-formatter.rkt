@@ -237,11 +237,8 @@
     ;; Remove debug output for cleaner execution
     
     ;; Try to use command-line SQLite as fallback if library fails
-    (define db 
-      (with-handlers ([exn:fail? 
-                       (lambda (exn)
-                         (printf "SQLite library failed, using command-line fallback~n")
-                         #f)])
+    (define db
+      (with-handlers ([exn:fail? (lambda (exn) #f)])
         (sqlite3-connect #:database db-path)))
     
     (if db
@@ -339,7 +336,6 @@
 ;; @param[metadata]{hash?} Metadata
 ;; @returns{boolean?} Success status
 (define (create-sqlite-via-command-line data db-path metadata)
-  (printf "Creating SQLite database using command-line tool...~n")
   
   ;; Remove existing database file if it exists
   (when (file-exists? db-path)
@@ -396,11 +392,9 @@
   
   ;; Check if database was created successfully
   (if (and result (file-exists? db-path))
+      #t
       (begin
-        (printf "SQLite database created successfully: ~a~n" db-path)
-        #t)
-      (begin
-        (printf "Failed to create SQLite database~n")
+        (eprintf "Failed to create SQLite database~n")
         #f)))
 
 ;; @function{sql-quote}

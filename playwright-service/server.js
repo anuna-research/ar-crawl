@@ -6,8 +6,14 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 chromium.use(StealthPlugin());
 
 const PORT = process.env.PLAYWRIGHT_SERVICE_PORT || 3033;
+const VERBOSE = process.env.VERBOSE === '1' || process.env.VERBOSE === 'true';
 
 let browser = null;
+
+// Logging helper - only logs if verbose mode is enabled
+function log(...args) {
+  if (VERBOSE) console.log(...args);
+}
 
 async function initBrowser() {
   if (!browser) {
@@ -20,7 +26,7 @@ async function initBrowser() {
         '--disable-features=IsolateOrigins,site-per-process'
       ]
     });
-    console.log('Browser initialized with stealth mode');
+    log('Browser initialized with stealth mode');
   }
   return browser;
 }
@@ -244,7 +250,7 @@ async function fetchPage(options) {
           await new Promise(resolve => setTimeout(resolve, scrollDelay));
           await page.waitForLoadState('networkidle').catch(() => {});
         } catch (e) {
-          console.log(`Click ${i + 1}/${clickCount} failed: ${e.message}`);
+          log(`Click ${i + 1}/${clickCount} failed: ${e.message}`);
           break;  // Stop if button not found
         }
       }
@@ -327,7 +333,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      console.log(`Fetching: ${options.url}`);
+      log(`Fetching: ${options.url}`);
       const result = await fetchPage(options);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -350,7 +356,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      console.log(`Probing: ${options.url}`);
+      log(`Probing: ${options.url}`);
       const result = await probePage(options);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -390,9 +396,9 @@ process.on('SIGTERM', async () => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Playwright service running on http://localhost:${PORT}`);
-  console.log('Endpoints:');
-  console.log('  POST /fetch  - Fetch and render a page');
-  console.log('  POST /probe  - Probe page load performance metrics');
-  console.log('  GET  /health - Health check');
+  log(`Playwright service running on http://localhost:${PORT}`);
+  log('Endpoints:');
+  log('  POST /fetch  - Fetch and render a page');
+  log('  POST /probe  - Probe page load performance metrics');
+  log('  GET  /health - Health check');
 });

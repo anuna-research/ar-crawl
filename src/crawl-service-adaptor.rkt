@@ -351,13 +351,15 @@
 ;; @description{Fetch URL with automatic fallback between services}
 (define (fetch-with-fallback url services
                             #:config [config (hash)]
-                            #:max-retries [max-retries 2])
-  
+                            #:max-retries [max-retries 2]
+                            #:verbose [verbose #f])
+
   (define (try-service service retry-count)
     (cond
       [(> retry-count max-retries) #f]
       [else
-       (printf "Trying service: ~a (attempt ~a)~n" service (add1 retry-count))
+       (when verbose
+         (printf "Trying service: ~a (attempt ~a)~n" service (add1 retry-count)))
        (let* ([service-config (hash-ref config service (hash))]
               [result (call-service service url service-config)])
          (if result
