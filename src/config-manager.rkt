@@ -135,14 +135,11 @@
 ;; @function{substitute-string-env-vars}
 ;; @description{Substitute environment variables in a string}
 (define (substitute-string-env-vars str)
-  (regexp-replace* 
+  (regexp-replace*
    #rx"\\$\\{([^}]+)\\}"
    str
    (lambda (match var-name)
-     (or (getenv var-name)
-         (begin
-           (printf "Warning: Environment variable ~a not found, using empty string~n" var-name)
-           "")))))
+     (or (getenv var-name) ""))))
 
 ;; @function{get-env-var}
 ;; @description{Get environment variable with fallback}

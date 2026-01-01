@@ -226,9 +226,9 @@
 
   (define crawler (create-crawler-from-config))
 
-  (printf "Crawling URL: ~a~n" url)
   (when verbose
-    (printf "Using services: ~a~n" 
+    (printf "Crawling URL: ~a~n" url)
+    (printf "Using services: ~a~n"
            (get-config-value global-config '(crawler services))))
   
   (define job-id (start-crawling crawler url))
@@ -246,14 +246,14 @@
   (define results (get-job-results crawler job-id))
   
   (if results
-      (let* ([_ (printf "Crawl completed successfully~n")]
-             ;; Apply XPath filter if specified
-             [filtered-results
+      (let* ([filtered-results
               (if xpath
                   (apply-xpath-filter-to-job-results results xpath)
                   results)])
+        (when verbose
+          (printf "Crawl completed successfully~n"))
         (output-results filtered-results output-file format verbose))
-      (printf "Crawl failed~n")))
+      (eprintf "Crawl failed~n")))
 
 ;; @function{cmd-crawl-site}
 ;; @description{Crawl an entire site with link following}
@@ -296,8 +296,8 @@
      #:same-domain-only same-domain
      #:crawl-delay-ms crawl-delay))
   
-  (printf "Starting site crawl from: ~a~n" url)
   (when verbose
+    (printf "Starting site crawl from: ~a~n" url)
     (printf "Max pages: ~a~n" max-pages)
     (printf "Max depth: ~a~n" max-depth)
     (printf "URL pattern: ~a~n" url-pattern)
@@ -329,10 +329,10 @@
 
   
   (if (empty? filtered-pages)
-      (printf "Site crawl failed - no pages crawled successfully~n")
+      (eprintf "Site crawl failed - no pages crawled successfully~n")
       (begin
-        (printf "Site crawl completed successfully~n")
         (when verbose
+          (printf "Site crawl completed successfully~n")
           (print-crawl-statistics result))
         
         ;; Save results if output file specified
@@ -431,7 +431,8 @@
          (hash-set (hash-set extracted 'source_url url)
                    'source_title title))]))
 
-  (printf "Extracted ~a records~n" (length results))
+  (when verbose
+    (printf "Extracted ~a records~n" (length results)))
 
   ;; Output results
   (define output-data
@@ -462,7 +463,8 @@
              (lambda (port)
                (write-json output-data port #:indent 2))
              #:exists 'replace)])
-        (printf "Results saved to: ~a~n" output-file))
+        (when verbose
+          (printf "Results saved to: ~a~n" output-file)))
       ;; Output to stdout
       (write-json output-data (current-output-port) #:indent 2)))
 
@@ -530,8 +532,8 @@
   ;; Start playwright service (probe requires it)
   (start-playwright-service #:verbose verbose)
 
-  (printf "Probing URL: ~a~n" url)
   (when verbose
+    (printf "Probing URL: ~a~n" url)
     (printf "Measuring page load timing metrics...~n"))
 
   ;; Call the playwright probe endpoint
@@ -940,7 +942,8 @@
            (call-with-output-file output-file
              (lambda (port) (display content port))
              #:exists 'replace)])
-        (printf "Results saved to: ~a~n" output-file))
+        (when verbose
+          (printf "Results saved to: ~a~n" output-file)))
       ;; Console output (only for non-SQLite formats)
       (when (not (eq? format 'sqlite))
         (define content 
