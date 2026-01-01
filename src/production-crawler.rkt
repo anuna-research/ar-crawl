@@ -15,7 +15,6 @@
          data/queue
          json
          uuid
-         gregor
          "scraper-interfaces.rkt"
          "crawl-service-adaptor.rkt"
          "utils.rkt")

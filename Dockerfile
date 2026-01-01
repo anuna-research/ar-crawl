@@ -16,7 +16,6 @@ RUN apt-get update && apt-get install -y \
 RUN raco pkg install --auto \
     html-parsing \
     uuid \
-    gregor \
     http123 \
     data-lib
 

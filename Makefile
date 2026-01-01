@@ -44,7 +44,6 @@ install:
 	$(RACO_BIN) pkg install --auto --skip-installed \
 		html-parsing \
 		uuid \
-		gregor \
 		http123
 	@echo "Dependencies installed successfully"
 
