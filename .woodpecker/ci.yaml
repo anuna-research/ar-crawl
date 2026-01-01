@@ -1,0 +1,9 @@
+when:
+  - event: [push, pull_request]
+
+steps:
+  - name: test
+    image: racket/racket:8.16-full
+    commands:
+      - raco pkg install --auto --skip-installed html-parsing uuid http123 sxml csv-writing
+      - make test

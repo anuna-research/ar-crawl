@@ -11,10 +11,10 @@
 (require racket/contract
          racket/string
          racket/match
+         racket/date
          net/url
          net/uri-codec
          json
-         gregor
          xml)
 
 (provide
@@ -45,8 +45,8 @@
   [escape-html (-> string? string?)]
   
   ;; Data conversion
-  [utils:moment->iso8601 (-> moment? string?)]
-  [utils:iso8601->moment (-> string? moment?)]
+  [utils:moment->iso8601 (-> date? string?)]
+  [utils:iso8601->moment (-> string? date?)]
   [safe-string->number (-> string? (or/c number? #f))]
   [bytes->string-safe (-> bytes? string?)]
   
@@ -245,18 +245,33 @@
 ;; ---------------
 
 ;; @function{utils:moment->iso8601}
-;; @description{Convert moment to ISO8601 string}
-;; @param[m]{moment?} Moment
+;; @description{Convert date to ISO8601 string}
+;; @param[d]{date?} Date
 ;; @returns{string?} ISO8601 string
-(define (utils:moment->iso8601 m)
-  (~t m "yyyy-MM-dd'T'HH:mm:ss'Z'"))
+(define (utils:moment->iso8601 d)
+  (format "~a-~a-~aT~a:~a:~aZ"
+          (date-year d)
+          (~r (date-month d) #:min-width 2 #:pad-string "0")
+          (~r (date-day d) #:min-width 2 #:pad-string "0")
+          (~r (date-hour d) #:min-width 2 #:pad-string "0")
+          (~r (date-minute d) #:min-width 2 #:pad-string "0")
+          (~r (date-second d) #:min-width 2 #:pad-string "0")))
 
 ;; @function{utils:iso8601->moment}
-;; @description{Parse ISO8601 string to moment}
+;; @description{Parse ISO8601 string to date}
 ;; @param[str]{string?} ISO8601 string
-;; @returns{moment?} Parsed moment
+;; @returns{date?} Parsed date
 (define (utils:iso8601->moment str)
-  (parse-moment str "yyyy-MM-dd'T'HH:mm:ss"))
+  (match (regexp-match #px"(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})" str)
+    [(list _ year month day hour minute second)
+     (date (string->number second)
+           (string->number minute)
+           (string->number hour)
+           (string->number day)
+           (string->number month)
+           (string->number year)
+           0 0 #f 0)]
+    [_ (error 'utils:iso8601->moment "Invalid ISO8601 format: ~a" str)]))
 
 ;; @function{safe-string->number}
 ;; @description{Safely convert string to number}
@@ -445,7 +460,7 @@ Focus on:
 ;; @description{Generate timestamp string}
 ;; @returns{string?} Timestamp string
 (define (generate-timestamp)
-  (utils:moment->iso8601 (now/moment/utc)))
+  (utils:moment->iso8601 (seconds->date (current-seconds) #f)))
 
 ;; @function{generate-unique-id}
 ;; @description{Generate unique ID with prefix}
@@ -566,15 +581,15 @@ Focus on:
     (check-equal? (escape-html "'single'") "&#39;single&#39;"))
 
   ;; Data Conversion Tests
-  (test-case "utils:moment->iso8601 formats moment"
-    (let* ([m (moment 2024 1 15 10 30 0)]
-           [result (utils:moment->iso8601 m)])
+  (test-case "utils:moment->iso8601 formats date"
+    (let* ([d (date 0 30 10 15 1 2024 0 0 #f 0)]  ; sec min hour day month year
+           [result (utils:moment->iso8601 d)])
       (check-true (string-contains? result "2024"))
       (check-true (string-contains? result "01-15"))))
 
   (test-case "utils:iso8601->moment parses timestamp"
     (let ([result (utils:iso8601->moment "2024-01-15T10:30:00")])
-      (check-true (moment? result))))
+      (check-true (date? result))))
 
   (test-case "safe-string->number converts numbers"
     (check-equal? (safe-string->number "123") 123)

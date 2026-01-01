@@ -10,10 +10,10 @@
 |#
 
 (require racket/contract
+         racket/date
          net/url
          net/uri-codec
          json
-         gregor
          html-parsing
          sxml
          sxml/sxpath
@@ -558,10 +558,21 @@
       (close-input-port port)
       content)))
 
+;; @function{format-iso8601}
+;; @description{Format date as ISO8601 string}
+(define (format-iso8601 d)
+  (format "~a-~a-~aT~a:~a:~aZ"
+          (date-year d)
+          (~r (date-month d) #:min-width 2 #:pad-string "0")
+          (~r (date-day d) #:min-width 2 #:pad-string "0")
+          (~r (date-hour d) #:min-width 2 #:pad-string "0")
+          (~r (date-minute d) #:min-width 2 #:pad-string "0")
+          (~r (date-second d) #:min-width 2 #:pad-string "0")))
+
 ;; @function{generate-timestamp}
 ;; @description{Generate ISO timestamp}
 (define (generate-timestamp)
-  (~t (now/moment/utc) "yyyy-MM-dd'T'HH:mm:ss'Z'"))
+  (format-iso8601 (seconds->date (current-seconds) #f)))
 
 ;; Direct HTTP Adapter (No API Key Required)
 ;; ------------------------------------------
@@ -643,7 +654,7 @@
 ;; @function{generate-direct-timestamp}
 ;; @description{Generate timestamp for direct service}
 (define (generate-direct-timestamp)
-  (~t (now/moment/utc) "yyyy-MM-dd'T'HH:mm:ss'Z'"))
+  (format-iso8601 (seconds->date (current-seconds) #f)))
 
 ;; Initialize default services
 (register-service 'direct direct-http-adaptor)

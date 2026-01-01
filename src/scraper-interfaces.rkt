@@ -9,7 +9,7 @@
 |#
 
 (require racket/contract
-         gregor)
+         racket/date)
 
 (provide
  ;; Data structures
@@ -144,7 +144,7 @@
 (define extracted-item/c
   (struct/c extracted-item
             string?
-            moment?
+            date?
             hash?
             (hash/c symbol? any/c)))
 
@@ -252,7 +252,7 @@
 
   (test-case "job-results with data and errors"
     (let ([results (job-results
-                    (list (extracted-item "url" (now/moment) (hash) (hash)))
+                    (list (extracted-item "url" (current-date) (hash) (hash)))
                     (hash)
                     '("error1"))])
       (check-equal? (length (job-results-data results)) 1)
@@ -260,7 +260,7 @@
 
   ;; extracted-item Tests
   (test-case "extracted-item struct creation"
-    (let* ([ts (now/moment)]
+    (let* ([ts (current-date)]
            [item (extracted-item "http://example.com" ts
                                  (hash 'name "Test") (hash 'source 'crawler))])
       (check-true (extracted-item? item))

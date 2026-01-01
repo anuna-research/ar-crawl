@@ -12,9 +12,28 @@
 (require racket/contract
          racket/match
          racket/string
+         racket/date
          db
-         gregor
          json)
+
+;; Date formatting helpers (replaces gregor's ~t)
+(define (format-datetime-db [d (current-date)])
+  (format "~a-~a-~a ~a:~a:~a"
+          (date-year d)
+          (~r (date-month d) #:min-width 2 #:pad-string "0")
+          (~r (date-day d) #:min-width 2 #:pad-string "0")
+          (~r (date-hour d) #:min-width 2 #:pad-string "0")
+          (~r (date-minute d) #:min-width 2 #:pad-string "0")
+          (~r (date-second d) #:min-width 2 #:pad-string "0")))
+
+(define (format-datetime-filename [d (current-date)])
+  (format "~a-~a-~a-~a~a~a"
+          (date-year d)
+          (~r (date-month d) #:min-width 2 #:pad-string "0")
+          (~r (date-day d) #:min-width 2 #:pad-string "0")
+          (~r (date-hour d) #:min-width 2 #:pad-string "0")
+          (~r (date-minute d) #:min-width 2 #:pad-string "0")
+          (~r (date-second d) #:min-width 2 #:pad-string "0")))
 
 (require "scraper-interfaces.rkt")
 
@@ -320,7 +339,7 @@
      SET end_time = ?, 
          pages_crawled = ?
      WHERE crawl_id = ?"
-    (~t (now) "yyyy-MM-dd HH:mm:ss")
+    (format-datetime-db)
     (sqlite-formatter-item-count fmt)
     crawl-id)
   
@@ -357,7 +376,7 @@
                (sql-quote crawl-id)
                (sql-quote (hash-ref metadata 'seed-url ""))
                (sql-quote (hash-ref metadata 'base-domain ""))
-               (sql-quote (~t (now) "yyyy-MM-dd HH:mm:ss"))
+               (sql-quote (format-datetime-db))
                (sql-quote (jsexpr->string metadata)))
       
       ;; Insert crawled pages - handle both single crawl and site crawl formats
@@ -422,12 +441,12 @@
   (define base-id 
     (cond
       [(hash-has-key? metadata 'seed-url)
-      (format "~a-~a" 
+      (format "~a-~a"
       (url-to-filename (hash-ref metadata 'seed-url))
-      (~t (now) "yyyy-MM-dd-HHmmss"))]
+      (format-datetime-filename))]
       [else
-       (format "crawl-~a" 
-               (~t (now) "yyyy-MM-dd-HHmmss"))]))
+       (format "crawl-~a"
+               (format-datetime-filename))]))
   
   ;; Ensure uniqueness by checking database
   (substring base-id 0 (min (string-length base-id) 50))) ; Limit length
@@ -455,7 +474,7 @@
     crawl-id
     (hash-ref metadata 'seed-url "")
     (hash-ref metadata 'base-domain "")
-    (~t (now) "yyyy-MM-dd HH:mm:ss")
+    (format-datetime-db)
     (jsexpr->string metadata)))
 
 ;; @function{insert-site-crawl-data}
