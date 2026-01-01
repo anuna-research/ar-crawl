@@ -49,6 +49,10 @@
      (define script-dir (path-only (path->complete-path (find-system-path 'run-file))))
      (define candidates
        (list
+        ;; For installed binary at ~/.local/bin: check ~/.local/lib/ar-crawl/playwright-service
+        (simplify-path (build-path script-dir ".." "lib" "ar-crawl" "playwright-service"))
+        ;; For dist/ar-crawl-dist/bin/ar-crawl: check ../lib/playwright-service
+        (simplify-path (build-path script-dir ".." "lib" "playwright-service"))
         ;; For dist/ar-crawl binary: go up twice to reach repo root
         (simplify-path (build-path script-dir ".." ".." "playwright-service"))
         ;; For racket src/cli.rkt: go up once
