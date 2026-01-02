@@ -205,16 +205,26 @@ steps:
 
         # Detect OS and architecture
         detect_platform() {
-          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          ARCH="$(uname -m)"
+          local detected_os detected_arch
 
-          case "$OS" in
+          detected_os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+          detected_arch="$(uname -m 2>/dev/null)"
+
+          if [[ -z "$detected_os" ]]; then
+            error "Could not detect operating system (uname -s failed)"
+          fi
+
+          if [[ -z "$detected_arch" ]]; then
+            error "Could not detect architecture (uname -m failed)"
+          fi
+
+          case "$detected_os" in
             linux*)  OS="linux" ;;
             darwin*) OS="macos" ;;
-            *)       error "Unsupported OS: $OS" ;;
+            *)       error "Unsupported OS: $detected_os" ;;
           esac
 
-          case "$ARCH" in
+          case "$detected_arch" in
             x86_64|amd64)  ARCH="x86_64" ;;
             arm64|aarch64)
               if [[ "$OS" == "macos" ]]; then
@@ -223,10 +233,16 @@ steps:
                 error "ARM64 Linux is not currently supported"
               fi
               ;;
-            *)       error "Unsupported architecture: $ARCH" ;;
+            *)       error "Unsupported architecture: $detected_arch" ;;
           esac
 
           PLATFORM="${OS}-${ARCH}"
+
+          # Verify variables are set before continuing
+          if [[ -z "$OS" ]] || [[ -z "$ARCH" ]] || [[ -z "$PLATFORM" ]]; then
+            error "Platform detection failed: OS=$OS, ARCH=$ARCH, PLATFORM=$PLATFORM"
+          fi
+
           info "Detected platform: $PLATFORM"
         }
 
