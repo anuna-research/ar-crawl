@@ -1,33 +1,26 @@
 # ar-crawl TODO
 
-## Friction Points (from User Persona Testing)
+## Current Issues
 
-### Data Scientist Workflow (Dr. Sarah Chen persona)
+### Code Bugs
 *Discovered: 2026-01-02*
 
-- [x] **`sample` command doesn't support SQLite format**
-  - When running `./ar-crawl sample /tmp/racket-docs.db`, get error about unsupported format
-  - Expected: Should be able to sample HTML from crawled SQLite database
-  - Workaround: Use raw `sqlite3` CLI queries
-  - *Completed 2026-01-02: Added .db file detection and load-crawled-pages function*
+- [ ] **Probe command JSON output has undefined variables**
+  - In `src/cli.rkt:649-676`, the JSON output section references variables
+    before they're defined: `perf`, `by-type`, `total-bytes`, `network-requests`,
+    `dynamic-score`, `js-time`, `xhr-count`, `fetch-count`, etc.
+  - This will cause errors when `-f json` is specified
+  - Location: `cmd-probe` function, JSON output block
+  - Fix: Move variable definitions before the JSON output block or restructure
 
-- [x] **`extract` command doesn't support SQLite format**
-  - Cannot run XPath extraction directly on `.db` files
-  - Expected: `./ar-crawl extract file.db --xpath-map '{...}'` should work
-  - Workaround: Use SQL queries with `sqlite3` CLI for analysis
-  - *Completed 2026-01-02: Added .db file detection to load data from SQLite*
-
-- [x] **No built-in text analysis for crawled data**
-  - Had to write custom SQL patterns like:
-    ```sql
-    (length(content) - length(replace(content, 'term', ''))) / len
-    ```
-  - Consider: Add `analyze` or `stats` subcommand for common metrics
-  - *Completed 2026-01-02: Added `stats` command with comprehensive crawl statistics*
+- [ ] **Probe command redundant code section**
+  - Lines 649-676 contain JSON output logic with duplicate variable assignments
+    that conflict with the text output section (lines 696-753)
+  - The code appears to be from a refactoring that was not completed
+  - Location: `cmd-probe` function
 
 ## Future Enhancements
 
-- [x] Add `--format sqlite` support to `sample` command
-- [x] Add `--format sqlite` support to `extract` command
-- [x] Consider unified `analyze` command for SQLite datasets
-  - *Implemented as `stats` command with page counts, content statistics, performance metrics, and domain analysis*
+- [ ] Add comprehensive unit tests for `probe` command
+- [ ] Add integration tests for SQLite workflow (crawl → sample → extract → stats)
+- [ ] Consider adding `--format jsonl` support for streaming JSON lines output
