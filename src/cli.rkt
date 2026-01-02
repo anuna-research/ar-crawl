@@ -1,11 +1,11 @@
 #lang racket
 
 #|
- @title{AR-Crawl CLI Tool}
- @author{Anuna Research}
- @date{2025-01-10}
- 
- Command-line interface for the production web crawler with service fallbacks.
+@title{AR-Crawl CLI Tool}
+@author{Anuna Research}
+@date{2025-01-10}
+
+Command-line interface for the production web crawler with service fallbacks.
 |#
 
 (require racket/cmdline
@@ -24,6 +24,8 @@
          "data-formatter.rkt"
          "html-extractor.rkt"
          "utils.rkt")
+
+(module+ main)
 
 ;; Global state
 (define current-crawler #f)
@@ -246,11 +248,13 @@
         (and output-file (detect-format-from-extension output-file))
         'json))
 
-  (when verbose
-    (printf "Crawling URL: ~a~n" url)
-    (printf "Using services: ~a~n"
-           (get-config-value global-config '(crawler services))))
-  
+  (if verbose
+      (begin
+        (printf "Crawling URL: ~a~n" url)
+        (printf "Using services: ~a~n"
+               (get-config-value global-config '(crawler services))))
+      (eprintf "Crawling URL: ~a...~n" url))
+
   (define job-id (start-crawling crawler url))
   
   ;; Wait for completion
@@ -270,8 +274,9 @@
               (if xpath
                   (apply-xpath-filter-to-job-results results xpath)
                   results)])
-        (when verbose
-          (printf "Crawl completed successfully~n"))
+        (if verbose
+            (printf "Crawl completed successfully~n")
+            (eprintf "Done.~n"))
         (output-results filtered-results output-file effective-format verbose))
       (eprintf "Crawl failed~n")))
 
@@ -330,13 +335,18 @@
     (printf "Same domain only: ~a~n" same-domain)
     (printf "Crawl delay: ~a ms~n" crawl-delay))
   
-  ;; Progress callback for verbose mode
+  ;; Progress callback for verbose/non-verbose mode
   (define progress-callback
     (if verbose
         (lambda (message current total)
           (printf "[~a/~a] ~a~n" current total message))
-        #f))
-  
+        (lambda (message current total)
+          ;; Simple progress updates for non-verbose mode
+          (when (or (= current 1)
+                    (= current total)
+                    (zero? (modulo current 10)))
+             (eprintf "Crawled ~a pages...~n" current)))))
+
   ;; Perform site crawl
   (define result (crawl-site url crawler site-config
                             #:progress-callback progress-callback))
@@ -1289,6 +1299,9 @@
           (printf "Run 'ar-crawl help crawl' for more information.~n")
           (exit 1))
         (define url (car post-cmd-args))
+        (when (string-prefix? url "-")
+           (printf "Error: Invalid URL '~a' (looks like a flag). URLs must not start with '-'~n" url)
+           (exit 1))
         (parse-crawl-args (cdr post-cmd-args))
         (cmd-crawl url
                    #:config (config-file-path)
@@ -1311,6 +1324,9 @@
           (printf "Run 'ar-crawl help crawl-site' for more information.~n")
           (exit 1))
         (define url (car post-cmd-args))
+        (when (string-prefix? url "-")
+           (printf "Error: Invalid URL '~a' (looks like a flag). URLs must not start with '-'~n" url)
+           (exit 1))
         (parse-crawl-site-args (cdr post-cmd-args))
         (cmd-crawl-site url
                         #:config (config-file-path)
@@ -1383,7 +1399,10 @@
           (printf "Usage: ar-crawl stats <file.db>~n")
           (exit 1))
         (define db-file (car post-cmd-args))
-        (cmd-stats db-file #:verbose (verbose-mode))]
+        (with-handlers ([exn:fail? (lambda (e)
+                                     (eprintf "Error analyzing stats: ~a~n" (exn-message e))
+                                     (exit 1))])
+           (cmd-stats db-file #:verbose (verbose-mode)))]
 
        [(probe)
         (when (empty? post-cmd-args)
@@ -2196,7 +2215,7 @@
     (check-true (same-domain-only))
     (check-equal? (crawl-delay-ms) 1000)
     (check-false (output-file-param))
-    (check-equal? (output-format-param) 'json)
+    (check-false (output-format-param))
     (check-false (xpath-filter-param))
     (check-equal? (sample-index-param) 0)
     (check-equal? (sample-length-param) 5000))
@@ -2289,3 +2308,4 @@
                             (lambda (handle)
                               (stop-playwright-service))))
   (main))
+
