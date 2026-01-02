@@ -342,7 +342,9 @@
                   (hash-ref (production-crawler-completed-jobs crawler) job-id #f)))
   
   (if job
-      (job-results (list (crawler-job-results job))
+      (job-results (if (crawler-job-results job)
+                       (list (crawler-job-results job))
+                       '())
                   (hash 'job-id job-id
                         'url (crawler-job-url job)
                         'status (symbol->string (crawler-job-status job))
