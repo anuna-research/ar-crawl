@@ -383,6 +383,66 @@ Command-line interface for the production web crawler with service fallbacks.
           
           (output-site-results site-results output-file effective-format verbose)))))
 
+;; ============================================================================
+;; URL Resolution Helpers
+;; ============================================================================
+
+;; @function{looks-like-url?}
+;; @description{Check if a string looks like a URL (for auto-resolution)}
+(define (looks-like-url? str)
+  (and (string? str)
+       (not (string=? str ""))
+       (or (string-prefix? str "http://")
+           (string-prefix? str "https://")
+           (string-prefix? str "//")
+           (string-prefix? str "/")
+           (regexp-match? #px"^\\.\\.?/" str))))
+
+;; @function{resolve-url}
+;; @description{Resolve a URL relative to a base URL}
+(define (resolve-url base-url-str url-str)
+  (with-handlers ([exn:fail? (lambda (e) url-str)])
+    (cond
+      ;; Already absolute URL with protocol
+      [(or (string-prefix? url-str "http://")
+           (string-prefix? url-str "https://"))
+       url-str]
+
+      ;; Protocol-relative URL (//example.com/path)
+      [(string-prefix? url-str "//")
+       (let* ([base (string->url base-url-str)]
+              [scheme (url-scheme base)])
+         (string-append scheme ":" url-str))]
+
+      ;; Relative URL - use combine-url/relative
+      [else
+       (let ([base (string->url base-url-str)]
+             [rel url-str])
+         (url->string (combine-url/relative base rel)))])))
+
+;; @function{resolve-urls-in-hash}
+;; @description{Resolve all URL-like values in a hash using source_url as base}
+(define (resolve-urls-in-hash item)
+  (define base-url (hash-ref item 'source_url #f))
+  (if (not base-url)
+      item  ; No source_url, can't resolve
+      (for/hash ([(key val) (in-hash item)])
+        (values key
+                (cond
+                  ;; Resolve single URL value
+                  [(and (not (eq? key 'source_url))
+                        (looks-like-url? val))
+                   (resolve-url base-url val)]
+
+                  ;; Resolve list of URLs
+                  [(and (list? val)
+                        (andmap string? val)
+                        (andmap looks-like-url? val))
+                   (map (lambda (u) (resolve-url base-url u)) val)]
+
+                  ;; Keep value as-is
+                  [else val])))))
+
 ;; @function{cmd-extract}
 ;; @description{Extract structured data from crawl results using XPath}
 (define (cmd-extract input-file
@@ -391,6 +451,7 @@ Command-line interface for the production web crawler with service fallbacks.
                      #:fields [field-xpaths-str #f]
                      #:output [output-file #f]
                      #:format [format 'json]
+                     #:resolve-urls [resolve-urls #f]
                      #:verbose [verbose #f])
 
   ;; Parse xpath-map from JSON string or build from parent/fields
@@ -488,15 +549,25 @@ Command-line interface for the production web crawler with service fallbacks.
          (hash-set (hash-set extracted 'source_url url)
                    'source_title title))]))
 
+  ;; Apply URL resolution if requested
+  (define final-results
+    (if resolve-urls
+        (begin
+          (when verbose
+            (printf "Resolving URLs to absolute form...~n"))
+          (map resolve-urls-in-hash results))
+        results))
+
   (when verbose
-    (printf "Extracted ~a records~n" (length results)))
+    (printf "Extracted ~a records~n" (length final-results)))
 
   ;; Output results
   (define output-data
-    (hash 'data results
+    (hash 'data final-results
           'metadata (hash 'source input-file
                          'xpath_map xpath-map
-                         'record_count (length results))
+                         'record_count (length final-results)
+                         'urls_resolved resolve-urls)
           'timestamp (generate-timestamp)))
 
   (if output-file
@@ -1189,6 +1260,8 @@ Command-line interface for the production web crawler with service fallbacks.
     (output-file-param file)]
    [("-f" "--format") fmt "Output format: json (default), csv, sqlite"
     (output-format-param (string->symbol fmt))]
+   [("--resolve-urls") "Resolve relative URLs to absolute URLs using source_url as base"
+    (extract-resolve-urls-param #t)]
    [("-v" "--verbose") "Show detailed progress"
     (verbose-mode #t)]
    #:args remaining
@@ -1468,6 +1541,7 @@ Command-line interface for the production web crawler with service fallbacks.
                      #:fields (extract-fields-param)
                      #:output (output-file-param)
                      #:format (output-format-param)
+                     #:resolve-urls (extract-resolve-urls-param)
                      #:verbose (verbose-mode))]
 
        [(sample)
@@ -1875,6 +1949,7 @@ Command-line interface for the production web crawler with service fallbacks.
   (printf "  --parent <xpath>         Parent container XPath for repeating items~n")
   (printf "  -o, --output <file>      Output file (stdout if not specified)~n")
   (printf "  -f, --format <fmt>       Output format: json (default), csv, sqlite~n")
+  (printf "  --resolve-urls           Resolve relative URLs to absolute URLs~n")
   (printf "  -v, --verbose            Show detailed progress~n~n")
 
   (printf "EXTRACTION MODES~n~n")
@@ -2022,6 +2097,7 @@ Command-line interface for the production web crawler with service fallbacks.
 (define extract-xpath-param (make-parameter #f))
 (define extract-parent-param (make-parameter #f))
 (define extract-fields-param (make-parameter #f))
+(define extract-resolve-urls-param (make-parameter #f))
 
 ;; Sample command parameters
 (define sample-index-param (make-parameter 0))
