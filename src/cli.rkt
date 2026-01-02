@@ -397,19 +397,23 @@
     (printf "Extracting from: ~a~n" input-file)
     (printf "XPath map: ~a~n" xpath-map))
 
-  ;; Load input file
-  (define input-data
+  ;; Load input file - detect SQLite by extension
+  (define items
     (with-handlers ([exn:fail? (lambda (e)
                                  (printf "Error loading file: ~a~n" (exn-message e))
                                  (exit 1))])
-      (call-with-input-file input-file
-        (lambda (port)
-          (string->jsexpr (port->string port))))))
-
-  ;; Get items to process (support both 'data' and 'pages' keys)
-  (define items (or (hash-ref input-data 'data #f)
-                    (hash-ref input-data 'pages #f)
-                    '()))
+      (let ([input-str (if (path? input-file) (path->string input-file) input-file)])
+        (if (string-suffix? input-str ".db")
+            ;; Load from SQLite database
+            (load-crawled-pages input-file)
+            ;; Load from JSON file
+            (let ([input-data
+                   (call-with-input-file input-file
+                     (lambda (port)
+                       (string->jsexpr (port->string port))))])
+              (or (hash-ref input-data 'data #f)
+                  (hash-ref input-data 'pages #f)
+                  '()))))))
 
   (when verbose
     (printf "Found ~a items to process~n" (length items)))
@@ -482,20 +486,24 @@
 ;; @function{cmd-sample}
 ;; @description{Show sample HTML from crawl results to help figure out XPaths}
 (define (cmd-sample input-file
-                    #:index [index 0]
-                    #:length [max-length 5000])
+                   #:index [index 0]
+                   #:length [max-length 5000])
 
-  ;; Load input file
-  (define input-data
+  ;; Load input file - detect SQLite by extension
+  (define items
     (with-handlers ([exn:fail? (lambda (e)
                                  (printf "Error loading file: ~a~n" (exn-message e))
                                  (exit 1))])
-      (call-with-input-file input-file
-        (lambda (port)
-          (string->jsexpr (port->string port))))))
-
-  ;; Get items
-  (define items (hash-ref input-data 'data '()))
+      (let ([input-str (if (path? input-file) (path->string input-file) input-file)])
+        (if (string-suffix? input-str ".db")
+            ;; Load from SQLite database
+            (load-crawled-pages input-file)
+            ;; Load from JSON file
+            (let ([input-data
+                   (call-with-input-file input-file
+                     (lambda (port)
+                       (string->jsexpr (port->string port))))])
+              (hash-ref input-data 'data '()))))))
 
   (when (empty? items)
     (printf "No items found in ~a~n" input-file)
@@ -533,6 +541,53 @@
   (printf "  - data-testid  -> //tag[@data-testid='value']~n")
   (printf "  - id=\"...\"    -> //tag[@id='value']~n")
   (printf "~nUse with: ar-crawl extract ~a --xpath-map '{\"field\": \"//xpath\"}'~n" input-file))
+
+;; @function{cmd-stats}
+;; @description{Show statistics about a crawl database (SQLite format)}
+(define (cmd-stats db-file
+                   #:verbose [verbose #f])
+
+  ;; Load and analyze stats
+  (define stats
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (printf "Error loading database: ~a~n" (exn-message e))
+                                 (exit 1))])
+      (analyze-crawl-stats db-file)))
+
+  (printf "~n=== Crawl Statistics ===~n")
+  (printf "Database: ~a~n~n" db-file)
+
+  (printf "--- Page Counts ---~n")
+  (printf "  Total pages crawled:     ~a~n" (hash-ref stats 'total_pages))
+  (printf "  Pages with titles:       ~a~n" (hash-ref stats 'pages_with_title))
+  (printf "  Failed URLs:             ~a~n" (hash-ref stats 'failed_pages))
+  (printf "  Discovered links:        ~a~n" (hash-ref stats 'discovered_links))
+  (printf "  Max crawl depth:         ~a~n~n" (hash-ref stats 'max_depth))
+
+  (printf "--- Content Statistics ---~n")
+  (printf "  Total content length:    ~a characters~n" (hash-ref stats 'total_content_length))
+  (printf "  Avg content length:      ~a characters~n~n" (hash-ref stats 'avg_content_length))
+
+  (printf "--- Performance Statistics ---~n")
+  (printf "  Avg response time:       ~a ms~n" (hash-ref stats 'avg_response_time_ms))
+  (printf "  Max response time:       ~a ms~n~n" (hash-ref stats 'max_response_time_ms))
+
+  (define status-codes (hash-ref stats 'status_codes))
+  (when (not (hash-empty? status-codes))
+    (printf "--- Status Codes ---~n")
+    (for ([(code count) (in-hash status-codes)])
+      (printf "  ~a:                     ~a~n" code count))
+    (newline))
+
+  (define top-domains (hash-ref stats 'top_domains))
+  (when (not (hash-empty? top-domains))
+    (printf "--- Top Domains ---~n")
+    (for ([(domain count) (in-hash top-domains)])
+      (printf "  ~a:                    ~a~n" domain count))
+    (newline))
+
+  (printf "Note: Use 'ar-crawl sample ~a' to view sample HTML content.~n" db-file)
+  (printf "      Use 'ar-crawl extract ~a --fields \"{...}\"' to extract data.~n~n" db-file))
 
 ;; @function{cmd-probe}
 ;; @description{Probe a URL to measure page load performance and suggest scraping parameters}
@@ -1289,6 +1344,14 @@
                     #:index (sample-index-param)
                     #:length (sample-length-param))]
 
+       [(stats)
+        (when (empty? post-cmd-args)
+          (printf "Error: Database file required for stats command~n~n")
+          (printf "Usage: ar-crawl stats <file.db>~n")
+          (exit 1))
+        (define db-file (car post-cmd-args))
+        (cmd-stats db-file #:verbose (verbose-mode))]
+
        [(probe)
         (when (empty? post-cmd-args)
           (printf "Error: URL required for probe command~n~n")
@@ -1360,6 +1423,7 @@
   (printf "  probe <url>         Measure page load metrics to inform scraping params~n")
   (printf "  sample <file>       Show sample HTML from crawl results (to figure out XPaths)~n")
   (printf "  extract <file>      Extract structured data from crawl results using XPath~n")
+  (printf "  stats <file.db>     Show statistics about crawl database~n")
   (printf "  health              Check health status of configured services~n")
   (printf "  test [--service]    Test crawling services with a sample URL~n")
   (printf "  config <subcommand> Manage configuration files~n")

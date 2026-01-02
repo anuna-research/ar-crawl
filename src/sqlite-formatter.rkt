@@ -54,9 +54,15 @@
   [close-sqlite-formatter (-> sqlite-formatter? void?)]
   
   ;; Query helpers
-  [query-crawl-results 
+  [query-crawl-results
    (-> path-string? string? (listof vector?))]
-   
+
+  [load-crawled-pages
+   (-> path-string? (listof hash?))]
+
+  [analyze-crawl-stats
+   (-> path-string? hash?)]
+
   [export-sqlite-to-json
    (-> path-string? path-string? boolean?)])
  
@@ -639,6 +645,91 @@
     #:exists 'replace)
 
   #t)
+
+;; @function{load-crawled-pages}
+;; @description{Load crawled pages from SQLite database in JSON-compatible format}
+;; @param[db-path]{path-string?} Database file path
+;; @returns{listof hash?} List of page hashes with url, title, content, timestamp, metadata
+(define (load-crawled-pages db-path)
+  (define db (sqlite3-connect #:database db-path))
+  (define rows (query-rows db "SELECT url, title, content, content_length, method, user_agent, timestamp, depth, parent_url, status_code, response_time_ms FROM crawled_pages ORDER BY id"))
+  (disconnect db)
+  (for/list ([row rows])
+    (hash 'url (vector-ref row 0)
+          'title (vector-ref row 1)
+          'content (vector-ref row 2)
+          'timestamp (vector-ref row 6)
+          'metadata (hash 'content-length (vector-ref row 3)
+                         'method (vector-ref row 4)
+                         'user-agent (vector-ref row 5)
+                         'depth (vector-ref row 7)
+                         'parent-url (vector-ref row 8)
+                         'status-code (vector-ref row 9)
+                         'response-time-ms (vector-ref row 10)))))
+
+;; @function{analyze-crawl-stats}
+;; @description{Generate statistics about crawled data in SQLite database}
+;; @param[db-path]{path-string?} Database file path
+;; @returns{hash?} Statistics hash with page counts, content stats, etc.
+(define (analyze-crawl-stats db-path)
+  (define db (sqlite3-connect #:database db-path))
+
+  ;; Basic page counts
+  (define total-pages (vector-ref (car (query-rows db "SELECT COUNT(*) FROM crawled_pages")) 0))
+  (define failed-pages (vector-ref (car (query-rows db "SELECT COUNT(*) FROM failed_urls")) 0))
+  (define discovered-links (vector-ref (car (query-rows db "SELECT COUNT(*) FROM discovered_links")) 0))
+
+  ;; Content statistics
+  (define avg-content-length
+    (if (> total-pages 0)
+        (vector-ref (car (query-rows db "SELECT AVG(content_length) FROM crawled_pages WHERE content_length IS NOT NULL")) 0)
+        0))
+  (define total-content-length
+    (vector-ref (car (query-rows db "SELECT SUM(content_length) FROM crawled_pages WHERE content_length IS NOT NULL")) 0))
+
+  ;; Response time statistics
+  (define avg-response-time
+    (if (> total-pages 0)
+        (vector-ref (car (query-rows db "SELECT AVG(response_time_ms) FROM crawled_pages WHERE response_time_ms IS NOT NULL")) 0)
+        0))
+  (define max-response-time
+    (if (> total-pages 0)
+        (vector-ref (car (query-rows db "SELECT MAX(response_time_ms) FROM crawled_pages WHERE response_time_ms IS NOT NULL")) 0)
+        0))
+
+  ;; Status code distribution
+  (define status-codes
+    (for/hash ([row (query-rows db "SELECT status_code, COUNT(*) FROM crawled_pages WHERE status_code IS NOT NULL GROUP BY status_code")])
+      (values (format "~a" (vector-ref row 0)) (vector-ref row 1))))
+
+  ;; Domain extraction
+  (define domains
+    (for/hash ([row (query-rows db "SELECT substr(url, 1, instr(substr(url, 9), '/') + 8) as domain, COUNT(*) FROM crawled_pages WHERE url LIKE 'https://%' OR url LIKE 'http://%' GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 10")])
+      (values (vector-ref row 0) (vector-ref row 1))))
+
+  ;; Titles statistics
+  (define pages-with-title
+    (vector-ref (car (query-rows db "SELECT COUNT(*) FROM crawled_pages WHERE title IS NOT NULL AND title != ''")) 0))
+
+  ;; Depth statistics
+  (define max-depth
+    (if (> total-pages 0)
+        (vector-ref (car (query-rows db "SELECT MAX(depth) FROM crawled_pages WHERE depth IS NOT NULL")) 0)
+        0))
+
+  (disconnect db)
+
+  (hash 'total_pages total-pages
+        'pages_with_title pages-with-title
+        'failed_pages failed-pages
+        'discovered_links discovered-links
+        'avg_content_length avg-content-length
+        'total_content_length total-content-length
+        'avg_response_time_ms avg-response-time
+        'max_response_time_ms max-response-time
+        'max_depth max-depth
+        'status_codes status-codes
+        'top_domains domains))
 
 ;; ============================================================================
 ;; Unit Tests
