@@ -1,0 +1,87 @@
+# Bug 003: XPath Function Output Returns Individual Characters
+
+## Status
+🔴 Critical
+
+## Category
+Data Extraction / XPath Processing
+
+## Description
+When using XPath functions like `string-length()` in extraction, the output returns each character as a separate array element instead of returning the computed numeric value. This makes the output completely unusable and massive (thousands of empty strings).
+
+## First-Time User Impact
+**High** - This would completely block users trying to use XPath functions for data extraction. The output becomes so large it's unusable, and there's no clear workaround mentioned in documentation.
+
+## Steps to Reproduce
+```bash
+# 1. Crawl a page
+ar-crawl crawl https://httpbin.org/html -o test.json
+
+# 2. Try to extract using string-length() function
+ar-crawl extract test.json --xpath-map '{"content_length": "string-length(//p)"}'
+```
+
+## Expected Behavior
+Should return:
+```json
+{
+  "data": [
+    {
+      "content_length": 3245,
+      "source_url": "https://httpbin.org/html"
+    }
+  ]
+}
+```
+
+## Actual Behavior
+Returns thousands of entries with individual characters or empty strings:
+```json
+{
+  "data": [
+    {
+      "content_length": [
+        "",
+        "",
+        "",
+        ... (continues for ~3000+ entries)
+      ]
+    }
+  ]
+}
+```
+
+## Root Cause
+The XPath evaluator appears to be converting function results to node-sets or strings, then iterating over each character instead of returning the computed value directly.
+
+## Suggested Fix
+1. Check if XPath result is a number/boolean/string primitive
+2. Return primitive values directly instead of converting to node-sets
+3. Only iterate over results when they are actual node-sets
+
+## Workaround
+None apparent - users cannot use XPath functions for computed values.
+
+## Test Cases to Add
+```bash
+# Test numeric functions
+ar-crawl extract test.json --xpath-map '{"count": "count(//p)"}'
+
+# Test string functions
+ar-crawl extract test.json --xpath-map '{"length": "string-length(//h1)"}'
+
+# Test boolean functions
+ar-crawl extract test.json --xpath-map '{"has_links": "boolean(//a)"}'
+
+# Test concat
+ar-crawl extract test.json --xpath-map '{"combined": "concat(//h1, \" - \", //title)"}'
+```
+
+## Related Files
+- `src/html-extractor.rkt` - XPath evaluation logic
+- `src/cli.rkt` - Extract command implementation
+
+## Notes
+- Basic XPath selectors work fine (e.g., `//h1/text()`)
+- Only XPath functions are affected
+- This severely limits the power of the XPath extraction feature
