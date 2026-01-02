@@ -175,6 +175,20 @@
 ;; CLI Commands
 ;; ------------
 
+;; @function{detect-format-from-extension}
+;; @description{Detect output format from file extension}
+(define (detect-format-from-extension file)
+  (define ext (filename-extension file))
+  (cond
+    [(not ext) #f]
+    [(bytes=? ext #"json") 'json]
+    [(bytes=? ext #"csv") 'csv]
+    [(bytes=? ext #"md") 'markdown]
+    [(bytes=? ext #"markdown") 'markdown]
+    [(bytes=? ext #"db") 'sqlite]
+    [(bytes=? ext #"sqlite") 'sqlite]
+    [else #f]))
+
 ;; @function{cmd-crawl}
 ;; @description{Crawl a single URL}
 (define (cmd-crawl url
@@ -226,6 +240,12 @@
 
   (define crawler (create-crawler-from-config))
 
+  ;; Resolve format
+  (define effective-format
+    (or format
+        (and output-file (detect-format-from-extension output-file))
+        'json))
+
   (when verbose
     (printf "Crawling URL: ~a~n" url)
     (printf "Using services: ~a~n"
@@ -252,7 +272,7 @@
                   results)])
         (when verbose
           (printf "Crawl completed successfully~n"))
-        (output-results filtered-results output-file format verbose))
+        (output-results filtered-results output-file effective-format verbose))
       (eprintf "Crawl failed~n")))
 
 ;; @function{cmd-crawl-site}
@@ -286,6 +306,12 @@
   (ensure-playwright-if-needed effective-services #:verbose verbose)
 
   (define crawler (create-crawler-from-config))
+
+  ;; Resolve format
+  (define effective-format
+    (or format
+        (and output-file (detect-format-from-extension output-file))
+        'json))
 
   ;; Create site crawl configuration
   (define site-config 
@@ -345,7 +371,7 @@
                                  'base-domain (hash-ref (site-crawl-result-metadata result) 'base-domain))
                   'timestamp (generate-timestamp)))
           
-          (output-site-results site-results output-file format verbose)))))
+          (output-site-results site-results output-file effective-format verbose)))))
 
 ;; @function{cmd-extract}
 ;; @description{Extract structured data from crawl results using XPath}
@@ -396,6 +422,12 @@
   (when verbose
     (printf "Extracting from: ~a~n" input-file)
     (printf "XPath map: ~a~n" xpath-map))
+
+  ;; Resolve format
+  (define effective-format
+    (or format
+        (and output-file (detect-format-from-extension output-file))
+        'json))
 
   ;; Load input file - detect SQLite by extension
   (define items
@@ -460,7 +492,7 @@
   (if output-file
       (begin
         (ensure-directory (or (path-only output-file) (current-directory)))
-        (case format
+        (case effective-format
           [(json)
            (call-with-output-file output-file
              (lambda (port)
@@ -1873,7 +1905,7 @@
 (define same-domain-only (make-parameter #t))
 (define crawl-delay-ms (make-parameter 1000))
 (define output-file-param (make-parameter #f))
-(define output-format-param (make-parameter 'json))
+(define output-format-param (make-parameter #f))
 (define xpath-filter-param (make-parameter #f))
 
 ;; Extract command parameters

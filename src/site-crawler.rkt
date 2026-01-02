@@ -123,7 +123,7 @@
   
   (site-crawl-config max-pages
                     max-depth
-                    (if (string? url-pattern) (regexp url-pattern) url-pattern)
+                    (if (string? url-pattern) (pregexp url-pattern) url-pattern)
                     same-domain-only
                     respect-robots
                     crawl-delay-ms

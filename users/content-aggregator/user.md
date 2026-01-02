@@ -61,9 +61,9 @@ ar-crawl extract blog-posts.db \
 
 # Query recent articles
 sqlite3 blog-posts.db "
-  SELECT url, title, date(crawled_at) as collected
+  SELECT url, title, date(timestamp) as collected
   FROM crawled_pages
-  ORDER BY crawled_at DESC
+  ORDER BY timestamp DESC
   LIMIT 20
 "
 ```
@@ -142,7 +142,8 @@ collect_source "industryblog" \
   '{"title": ".//h2", "content": ".//div[@class=\"content\"]", "date": ".//span[@class=\"date\"]"}'
 
 # Source 3: Company Updates (JavaScript-heavy)
-ar-crawl -s playwright crawl-site "https://updates.company.com" \
+ar-crawl crawl-site "https://updates.company.com" \
+  -s playwright \
   --url-pattern ".*/update/.*" \
   --max-pages 20 \
   --pw-delay 3000 \
@@ -182,7 +183,7 @@ ar-crawl crawl-site https://archive-target.com/articles \
 # Check progress
 sqlite3 archive.db "
   SELECT
-    strftime('%Y-%m', crawled_at) as month,
+    strftime('%Y-%m', timestamp) as month,
     COUNT(*) as pages
   FROM crawled_pages
   GROUP BY month
@@ -216,7 +217,7 @@ Jamie runs hourly updates to catch new content.
 DB_PATH="data/feed.db"
 
 # Get most recent crawl timestamp
-LAST_RUN=$(sqlite3 "$DB_PATH" "SELECT MAX(crawled_at) FROM crawled_pages" 2>/dev/null || echo "")
+LAST_RUN=$(sqlite3 "$DB_PATH" "SELECT MAX(timestamp) FROM crawled_pages" 2>/dev/null || echo "")
 
 echo "Last run: $LAST_RUN"
 echo "Checking for new content..."
@@ -352,7 +353,8 @@ ar-crawl crawl-site https://strict-site.com \
 ar-crawl probe https://mystery-site.com -v
 
 # Use Playwright if JS is needed
-ar-crawl -s playwright crawl-site https://mystery-site.com \
+ar-crawl crawl-site https://mystery-site.com \
+  -s playwright \
   --pw-delay 4000
 ```
 
