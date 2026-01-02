@@ -375,9 +375,20 @@
              'fields (with-handlers ([exn:fail? (lambda (e) (hash))])
                       (string->jsexpr field-xpaths-str)))]
 
+      [field-xpaths-str
+       ;; --fields alone works as shorthand for --xpath-map (simple extraction)
+       ;; This is convenient for LLM agents who don't need item extraction
+       (with-handlers ([exn:fail? (lambda (e)
+                                    (printf "Error parsing fields JSON: ~a~n" (exn-message e))
+                                    (exit 1))])
+         (let ([parsed (string->jsexpr field-xpaths-str)])
+           (for/hash ([(k v) (in-hash parsed)])
+             (values (if (string? k) (string->symbol k) k) v))))]
+
       [else
-       (printf "Error: Must provide either --xpath-map or both --parent and --fields~n")
+       (printf "Error: Must provide --fields, --xpath-map, or both --parent and --fields~n")
        (printf "~nUsage:~n")
+       (printf "  ar-crawl extract <file> --fields '{\"title\": \"//h1\", \"body\": \"//p\"}'~n")
        (printf "  ar-crawl extract <file> --xpath-map '{\"name\": \"//h1\", \"price\": \"//span\"}'~n")
        (printf "  ar-crawl extract <file> --parent \"//div[@class='product']\" --fields '{\"name\": \".//h2\", \"price\": \".//span\"}'~n")
        (exit 1)]))
@@ -1036,7 +1047,7 @@
     (extract-xpath-param xpath-json)]
    [("--parent") parent "Parent XPath for item extraction (use with --fields)"
     (extract-parent-param parent)]
-   [("--fields") fields-json "JSON object mapping field names to relative XPaths (use with --parent)"
+   [("--fields") fields-json "JSON object mapping field names to XPaths (alone or with --parent)"
     (extract-fields-param fields-json)]
    [("-o" "--output") file "Save results to file"
     (output-file-param file)]
@@ -1648,23 +1659,23 @@
   (printf "Powered by sxml/sxpath for robust HTML parsing.~n~n")
 
   (printf "USAGE~n")
-  (printf "  ar-crawl extract <file> --xpath-map '<json>'~n")
+  (printf "  ar-crawl extract <file> --fields '<json>'~n")
   (printf "  ar-crawl extract <file> --parent '<xpath>' --fields '<json>'~n~n")
 
   (printf "OPTIONS~n")
-  (printf "  --xpath-map <json>       JSON object mapping field names to XPath expressions~n")
+  (printf "  --fields <json>          JSON object mapping field names to XPaths~n")
+  (printf "  --xpath-map <json>       Alias for --fields~n")
   (printf "  --parent <xpath>         Parent container XPath for repeating items~n")
-  (printf "  --fields <json>          JSON object with relative XPaths (use with --parent)~n")
   (printf "  -o, --output <file>      Output file (stdout if not specified)~n")
   (printf "  -f, --format <fmt>       Output format: json (default), csv, sqlite~n")
   (printf "  -v, --verbose            Show detailed progress~n~n")
 
   (printf "EXTRACTION MODES~n~n")
 
-  (printf "  1. Simple Field Extraction (--xpath-map)~n")
+  (printf "  1. Simple Field Extraction (--fields)~n")
   (printf "     Extract specific fields from each page in the crawl results.~n~n")
   (printf "     Example: Extract title and all prices~n")
-  (displayln "     ar-crawl extract results.json --xpath-map '{")
+  (displayln "     ar-crawl extract results.json --fields '{")
   (displayln "       \"title\": \"//title\",")
   (displayln "       \"prices\": \"//span[contains(@class,\\\"price\\\")]\"")
   (displayln "     }'")
