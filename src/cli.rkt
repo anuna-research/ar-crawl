@@ -274,10 +274,10 @@ Command-line interface for the production web crawler with service fallbacks.
               (if xpath
                   (apply-xpath-filter-to-job-results results xpath)
                   results)])
+        (output-results filtered-results output-file effective-format verbose)
         (if verbose
             (printf "Crawl completed successfully~n")
-            (eprintf "Done.~n"))
-        (output-results filtered-results output-file effective-format verbose))
+            (eprintf "Done.~n")))
       (eprintf "Crawl failed~n")))
 
 ;; @function{cmd-crawl-site}
@@ -1142,7 +1142,7 @@ Command-line interface for the production web crawler with service fallbacks.
         (displayln (jsexpr->string json-health #:encode 'control)))
       (begin
         (printf "Overall Status: ~a~n" (health-status-status health))
-        (printf "Uptime: ~a seconds~n" (health-status-uptime health))
+        (printf "Uptime: ~a seconds~n" (exact->inexact (health-status-uptime health)))
 
         (printf "~nService Health:~n")
         (for ([(service healthy?) (in-hash (health-status-services health))])

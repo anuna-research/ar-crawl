@@ -404,11 +404,11 @@
   (printf "Pages Successfully Crawled: ~a~n" (hash-ref stats 'pages-crawled))
   (printf "Failed URLs: ~a~n" (hash-ref stats 'failed-urls))
   (printf "Total URLs Discovered: ~a~n" (hash-ref stats 'total-urls-discovered))
-  (printf "Total Duration: ~a ms (~a seconds)~n" 
+  (printf "Total Duration: ~a ms (~a seconds)~n"
          (hash-ref stats 'duration-ms)
-         (/ (hash-ref stats 'duration-ms) 1000))
-  (printf "Average Time per Page: ~a ms~n" 
-         (exact-round (hash-ref stats 'average-page-time-ms))))
+         (exact->inexact (/ (hash-ref stats 'duration-ms) 1000)))
+  (printf "Average Time per Page: ~a ms~n"
+         (exact->inexact (hash-ref stats 'average-page-time-ms))))
 
 ;; Export the utility function
 (provide print-crawl-statistics)
