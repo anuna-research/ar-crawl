@@ -23,7 +23,8 @@ Command-line interface for the production web crawler with service fallbacks.
          "site-crawler.rkt"
          "data-formatter.rkt"
          "html-extractor.rkt"
-         "utils.rkt")
+         "utils.rkt"
+         "error-handler.rkt")
 
 (module+ main)
 
@@ -635,8 +636,10 @@ Command-line interface for the production web crawler with service fallbacks.
       [xpath-map-str
        ;; Parse JSON object: {"name": "//h1", "price": "//span[@class='price']"}
        (with-handlers ([exn:fail? (lambda (e)
-                                    (printf "Error parsing XPath map: ~a~n" (exn-message e))
-                                    (exit 1))])
+                                    (let ([details (json-parse-error-details e xpath-map-str)])
+                                      (report-error-and-exit 'json-parse-error
+                                                            "Failed to parse --xpath-map JSON"
+                                                            details)))])
          (let ([parsed (string->jsexpr xpath-map-str)])
            (for/hash ([(k v) (in-hash parsed)])
              (values (if (string? k) (string->symbol k) k) v))))]
@@ -651,8 +654,10 @@ Command-line interface for the production web crawler with service fallbacks.
        ;; --fields alone works as shorthand for --xpath-map (simple extraction)
        ;; This is convenient for LLM agents who don't need item extraction
        (with-handlers ([exn:fail? (lambda (e)
-                                    (printf "Error parsing fields JSON: ~a~n" (exn-message e))
-                                    (exit 1))])
+                                    (let ([details (json-parse-error-details e field-xpaths-str)])
+                                      (report-error-and-exit 'json-parse-error
+                                                            "Failed to parse --fields JSON"
+                                                            details)))])
          (let ([parsed (string->jsexpr field-xpaths-str)])
            (for/hash ([(k v) (in-hash parsed)])
              (values (if (string? k) (string->symbol k) k) v))))]
@@ -680,11 +685,20 @@ Command-line interface for the production web crawler with service fallbacks.
         (and output-file (detect-format-from-extension output-file))
         'json))
 
+  ;; Set output format for error handler
+  (current-output-format effective-format)
+
   ;; Load input file - detect SQLite by extension
   (define items
     (with-handlers ([exn:fail? (lambda (e)
-                                 (printf "Error loading file: ~a~n" (exn-message e))
-                                 (exit 1))])
+                                 (let* ([error-type (classify-error e)]
+                                        [details (file-error-details e input-file)]
+                                        [file-str (if (path? input-file)
+                                                     (path->string input-file)
+                                                     input-file)])
+                                   (report-error-and-exit error-type
+                                                         (string-append "Failed to load " file-str)
+                                                         details)))])
       (let ([input-str (if (path? input-file) (path->string input-file) input-file)])
         (if (string-suffix? input-str ".db")
             ;; Load from SQLite database
@@ -807,8 +821,14 @@ Command-line interface for the production web crawler with service fallbacks.
   ;; Load input file - detect SQLite by extension
   (define items
     (with-handlers ([exn:fail? (lambda (e)
-                                 (printf "Error loading file: ~a~n" (exn-message e))
-                                 (exit 1))])
+                                 (let* ([error-type (classify-error e)]
+                                        [details (file-error-details e input-file)]
+                                        [file-str (if (path? input-file)
+                                                     (path->string input-file)
+                                                     input-file)])
+                                   (report-error-and-exit error-type
+                                                         (string-append "Failed to load " file-str)
+                                                         details)))])
       (let ([input-str (if (path? input-file) (path->string input-file) input-file)])
         (if (string-suffix? input-str ".db")
             ;; Load from SQLite database
@@ -1291,6 +1311,38 @@ Command-line interface for the production web crawler with service fallbacks.
 ;; Helper Functions
 ;; ----------------
 
+;; @function{validate-url-or-error}
+;; @description{Validate URL and return detailed error info if invalid}
+;; @param[url-str]{string?} The URL to validate
+;; @returns{(values boolean? hash?)} Valid? and error details
+(define (validate-url-or-error url-str)
+  (cond
+    [(not (string? url-str))
+     (values #f (hash 'error_type 'invalid-type
+                      'message "URL must be a string"
+                      'suggestions (list "Provide a URL as a string")))]
+
+    [(string-prefix? url-str "-")
+     (values #f (url-error-details url-str 'looks-like-flag))]
+
+    [(not (regexp-match? #rx"^https?://" url-str))
+     (let ([fixed-url (string-append "https://" url-str)])
+       (values #f (hash 'error_type 'missing-protocol
+                       'url url-str
+                       'suggestion fixed-url
+                       'message (format "Invalid URL '~a'" url-str)
+                       'suggestions (list (format "Did you mean: ~a?" fixed-url)
+                                        "URLs must include the protocol (http:// or https://)"))))]
+
+    [(not (ok-http-url? url-str))
+     (values #f (hash 'error_type 'invalid-url
+                     'url url-str
+                     'message (format "Invalid URL '~a'" url-str)
+                     'suggestions (list "Check URL format"
+                                      "Ensure it includes protocol (http:// or https://)")))]
+
+    [else (values #t (hash))]))
+
 ;; @function{setup-crawler}
 ;; @description{Setup crawler with configuration}
 (define (setup-crawler config-file verbose)
@@ -1666,14 +1718,17 @@ Command-line interface for the production web crawler with service fallbacks.
      (case cmd-sym
        [(crawl)
         (when (empty? post-cmd-args)
-          (printf "Error: URL required for crawl command~n~n")
-          (printf "Usage: ar-crawl crawl <url> [options]~n")
-          (printf "Run 'ar-crawl help crawl' for more information.~n")
-          (exit 1))
+          (report-error-and-exit 'missing-argument
+                                "URL required for crawl command"
+                                (hash 'suggestions (list "Provide a URL to crawl"
+                                                       "Example: ar-crawl crawl https://example.com"
+                                                       "Run 'ar-crawl help crawl' for more information"))))
         (define url (car post-cmd-args))
-        (when (string-prefix? url "-")
-           (printf "Error: Invalid URL '~a' (looks like a flag). URLs must not start with '-'~n" url)
-           (exit 1))
+        (let-values ([(valid? error-info) (validate-url-or-error url)])
+          (unless valid?
+            (report-error-and-exit (hash-ref error-info 'error_type)
+                                  (hash-ref error-info 'message)
+                                  error-info)))
         (parse-crawl-args (cdr post-cmd-args))
         (cmd-crawl url
                    #:config (config-file-path)
@@ -1691,14 +1746,17 @@ Command-line interface for the production web crawler with service fallbacks.
 
        [(crawl-site)
         (when (empty? post-cmd-args)
-          (printf "Error: URL required for crawl-site command~n~n")
-          (printf "Usage: ar-crawl crawl-site <url> [options]~n")
-          (printf "Run 'ar-crawl help crawl-site' for more information.~n")
-          (exit 1))
+          (report-error-and-exit 'missing-argument
+                                "URL required for crawl-site command"
+                                (hash 'suggestions (list "Provide a URL to crawl"
+                                                       "Example: ar-crawl crawl-site https://example.com"
+                                                       "Run 'ar-crawl help crawl-site' for more information"))))
         (define url (car post-cmd-args))
-        (when (string-prefix? url "-")
-           (printf "Error: Invalid URL '~a' (looks like a flag). URLs must not start with '-'~n" url)
-           (exit 1))
+        (let-values ([(valid? error-info) (validate-url-or-error url)])
+          (unless valid?
+            (report-error-and-exit (hash-ref error-info 'error_type)
+                                  (hash-ref error-info 'message)
+                                  error-info)))
         (parse-crawl-site-args (cdr post-cmd-args))
         (cmd-crawl-site url
                         #:config (config-file-path)

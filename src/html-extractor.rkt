@@ -16,7 +16,8 @@
          json
          html-parsing
          sxml
-         sxml/sxpath)
+         sxml/sxpath
+         "error-handler.rkt")
 
 (provide
  (contract-out
@@ -64,8 +65,11 @@
 ;; @description{Create an sxpath function from xpath string}
 (define (make-xpath xpath-expr)
   (with-handlers ([exn:fail? (lambda (e)
-                               (printf "Invalid XPath (~a): ~a~n" xpath-expr (exn-message e))
-                               (lambda (x) '()))])
+                               (let ([details (xpath-error-details e xpath-expr)])
+                                 (report-error 'xpath-error
+                                             (format "Invalid XPath: ~a" xpath-expr)
+                                             details)
+                                 (lambda (x) '())))])
     (let ([result (sxpath xpath-expr)])
       ;; sxpath returns #f for invalid xpath instead of throwing
       (if result
@@ -83,8 +87,11 @@
 ;; @returns{listof any/c} Matching SXML nodes
 (define (extract-by-xpath html-str xpath-expr)
   (with-handlers ([exn:fail? (lambda (e)
-                               (printf "XPath extraction error: ~a~n" (exn-message e))
-                               '())])
+                               (let ([details (xpath-error-details e xpath-expr)])
+                                 (report-error 'xpath-error
+                                             "XPath extraction error"
+                                             details)
+                                 '()))])
     (let* ([sxml (html->sxml html-str)]
            [xpath-fn (make-xpath xpath-expr)])
       (xpath-fn sxml))))
