@@ -700,12 +700,12 @@
   ;; Status code distribution
   (define status-codes
     (for/hash ([row (query-rows db "SELECT status_code, COUNT(*) FROM crawled_pages WHERE status_code IS NOT NULL GROUP BY status_code")])
-      (values (format "~a" (vector-ref row 0)) (vector-ref row 1))))
+      (values (string->symbol (format "~a" (vector-ref row 0))) (vector-ref row 1))))
 
   ;; Domain extraction
   (define domains
     (for/hash ([row (query-rows db "SELECT substr(url, 1, instr(substr(url, 9), '/') + 8) as domain, COUNT(*) FROM crawled_pages WHERE url LIKE 'https://%' OR url LIKE 'http://%' GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 10")])
-      (values (vector-ref row 0) (vector-ref row 1))))
+      (values (string->symbol (vector-ref row 0)) (vector-ref row 1))))
 
   ;; Titles statistics
   (define pages-with-title
@@ -719,15 +719,18 @@
 
   (disconnect db)
 
+  (define (clean-val v)
+    (if (sql-null? v) 0 v))
+
   (hash 'total_pages total-pages
         'pages_with_title pages-with-title
         'failed_pages failed-pages
         'discovered_links discovered-links
-        'avg_content_length avg-content-length
-        'total_content_length total-content-length
-        'avg_response_time_ms avg-response-time
-        'max_response_time_ms max-response-time
-        'max_depth max-depth
+        'avg_content_length (clean-val avg-content-length)
+        'total_content_length (clean-val total-content-length)
+        'avg_response_time_ms (clean-val avg-response-time)
+        'max_response_time_ms (clean-val max-response-time)
+        'max_depth (clean-val max-depth)
         'status_codes status-codes
         'top_domains domains))
 

@@ -587,7 +587,8 @@ Command-line interface for the production web crawler with service fallbacks.
 ;; @function{cmd-stats}
 ;; @description{Show statistics about a crawl database (SQLite format)}
 (define (cmd-stats db-file
-                   #:verbose [verbose #f])
+                   #:verbose [verbose #f]
+                   #:format [format #f])
 
   ;; Load and analyze stats
   (define stats
@@ -596,51 +597,55 @@ Command-line interface for the production web crawler with service fallbacks.
                                  (exit 1))])
       (analyze-crawl-stats db-file)))
 
-  (printf "~n=== Crawl Statistics ===~n")
-  (printf "Database: ~a~n~n" db-file)
+  (if (eq? format 'json)
+      (displayln (jsexpr->string stats #:encode 'control))
+      (begin
+        (printf "~n=== Crawl Statistics ===~n")
+        (printf "Database: ~a~n~n" db-file)
 
-  (printf "--- Page Counts ---~n")
-  (printf "  Total pages crawled:     ~a~n" (hash-ref stats 'total_pages))
-  (printf "  Pages with titles:       ~a~n" (hash-ref stats 'pages_with_title))
-  (printf "  Failed URLs:             ~a~n" (hash-ref stats 'failed_pages))
-  (printf "  Discovered links:        ~a~n" (hash-ref stats 'discovered_links))
-  (printf "  Max crawl depth:         ~a~n~n" (hash-ref stats 'max_depth))
+        (printf "--- Page Counts ---~n")
+        (printf "  Total pages crawled:     ~a~n" (hash-ref stats 'total_pages))
+        (printf "  Pages with titles:       ~a~n" (hash-ref stats 'pages_with_title))
+        (printf "  Failed URLs:             ~a~n" (hash-ref stats 'failed_pages))
+        (printf "  Discovered links:        ~a~n" (hash-ref stats 'discovered_links))
+        (printf "  Max crawl depth:         ~a~n~n" (hash-ref stats 'max_depth))
 
-  (printf "--- Content Statistics ---~n")
-  (printf "  Total content length:    ~a characters~n" (hash-ref stats 'total_content_length))
-  (printf "  Avg content length:      ~a characters~n~n" (hash-ref stats 'avg_content_length))
+        (printf "--- Content Statistics ---~n")
+        (printf "  Total content length:    ~a characters~n" (hash-ref stats 'total_content_length))
+        (printf "  Avg content length:      ~a characters~n~n" (hash-ref stats 'avg_content_length))
 
-  (printf "--- Performance Statistics ---~n")
-  (printf "  Avg response time:       ~a ms~n" (hash-ref stats 'avg_response_time_ms))
-  (printf "  Max response time:       ~a ms~n~n" (hash-ref stats 'max_response_time_ms))
+        (printf "--- Performance Statistics ---~n")
+        (printf "  Avg response time:       ~a ms~n" (hash-ref stats 'avg_response_time_ms))
+        (printf "  Max response time:       ~a ms~n~n" (hash-ref stats 'max_response_time_ms))
 
-  (define status-codes (hash-ref stats 'status_codes))
-  (when (not (hash-empty? status-codes))
-    (printf "--- Status Codes ---~n")
-    (for ([(code count) (in-hash status-codes)])
-      (printf "  ~a:                     ~a~n" code count))
-    (newline))
+        (let ([status-codes (hash-ref stats 'status_codes)])
+          (when (not (hash-empty? status-codes))
+            (printf "--- Status Codes ---~n")
+            (for ([(code count) (in-hash status-codes)])
+              (printf "  ~a:                     ~a~n" code count))
+            (newline)))
 
-  (define top-domains (hash-ref stats 'top_domains))
-  (when (not (hash-empty? top-domains))
-    (printf "--- Top Domains ---~n")
-    (for ([(domain count) (in-hash top-domains)])
-      (printf "  ~a:                    ~a~n" domain count))
-    (newline))
+        (let ([top-domains (hash-ref stats 'top_domains)])
+          (when (not (hash-empty? top-domains))
+            (printf "--- Top Domains ---~n")
+            (for ([(domain count) (in-hash top-domains)])
+              (printf "  ~a:                    ~a~n" domain count))
+            (newline)))
 
-  (printf "Note: Use 'ar-crawl sample ~a' to view sample HTML content.~n" db-file)
-  (printf "      Use 'ar-crawl extract ~a --fields \"{...}\"' to extract data.~n~n" db-file))
+        (printf "Note: Use 'ar-crawl sample ~a' to view sample HTML content.~n" db-file)
+        (printf "      Use 'ar-crawl extract ~a --fields \"{...}\"' to extract data.~n~n" db-file))))
 
 ;; @function{cmd-probe}
 ;; @description{Probe a URL to measure page load performance and suggest scraping parameters}
 (define (cmd-probe url
                    #:verbose [verbose #f]
-                   #:output [output-file #f])
+                   #:output [output-file #f]
+                   #:format [output-format #f])
 
   ;; Start playwright service (probe requires it)
-  (start-playwright-service #:verbose verbose)
+  (start-playwright-service #:verbose (and verbose (not (eq? output-format 'json))))
 
-  (when verbose
+  (when (and verbose (not (eq? output-format 'json)))
     (printf "Probing URL: ~a~n" url)
     (printf "Measuring page load timing metrics...~n"))
 
@@ -649,7 +654,8 @@ Command-line interface for the production web crawler with service fallbacks.
 
   (define response
     (with-handlers ([exn:fail? (lambda (e)
-                                  (printf "Probe failed: ~a~n" (exn-message e))
+                                  (unless (eq? output-format 'json)
+                                    (printf "Probe failed: ~a~n" (exn-message e)))
                                   #f)])
       (define req-data (jsexpr->string (hash 'url url)))
       (define port (post-pure-port
@@ -661,7 +667,9 @@ Command-line interface for the production web crawler with service fallbacks.
       (string->jsexpr raw-response)))
 
   (when (not response)
-    (printf "Failed to probe URL. Is the playwright service running?~n")
+    (if (eq? output-format 'json)
+        (displayln (jsexpr->string (hash 'error "Probe failed" 'details "Check playwright service or URL") #:encode 'control))
+        (printf "Failed to probe URL. Is the playwright service running?~n"))
     (exit 1))
 
   ;; Extract key metrics (Racket json library uses symbols for keys)
@@ -693,63 +701,74 @@ Command-line interface for the production web crawler with service fallbacks.
             (if (> network-idle-delay 1000) 15 (if (> network-idle-delay 500) 5 0)))))
 
   ;; Display results
-  (printf "~n=== Page Load Metrics ===~n~n")
+  (if (eq? output-format 'json)
+      (let ([output-data
+             (hash 'url url
+                   'timing timing
+                   'resources resources
+                   'recommendations recommendations
+                   'probeTime probe-time
+                   'dynamicScore dynamic-score
+                   'timestamp (generate-timestamp))])
+        (displayln (jsexpr->string output-data #:encode 'control)))
+      (begin
+        (printf "~n=== Page Load Metrics ===~n~n")
 
-  (printf "Timing:~n")
-  (printf "  DOM Content Loaded: ~a ms~n" (hash-ref timing 'domContentLoaded 0))
-  (printf "  Page Load Complete: ~a ms~n" (hash-ref timing 'loadComplete 0))
-  (printf "  Network Idle:       ~a ms~n" (hash-ref timing 'networkIdleTime 0))
-  (printf "  JS Execution (est): ~a ms~n" (hash-ref timing 'jsExecutionEstimate 0))
+        (printf "Timing:~n")
+        (printf "  DOM Content Loaded: ~a ms~n" (hash-ref timing 'domContentLoaded 0))
+        (printf "  Page Load Complete: ~a ms~n" (hash-ref timing 'loadComplete 0))
+        (printf "  Network Idle:       ~a ms~n" (hash-ref timing 'networkIdleTime 0))
+        (printf "  JS Execution (est): ~a ms~n" (hash-ref timing 'jsExecutionEstimate 0))
 
-  (when verbose
-    (printf "~n  Performance API Details:~n")
-    (printf "    TTFB:             ~a ms~n" (hash-ref perf 'ttfb 0))
-    (printf "    DOM Parsing:      ~a ms~n" (hash-ref perf 'domParsing 0))
-    (printf "    DOM Interactive:  ~a ms~n" (hash-ref perf 'domInteractive 0))
-    (printf "    DOM Complete:     ~a ms~n" (hash-ref perf 'domComplete 0)))
+        (when verbose
+          (printf "~n  Performance API Details:~n")
+          (printf "    TTFB:             ~a ms~n" (hash-ref perf 'ttfb 0))
+          (printf "    DOM Parsing:      ~a ms~n" (hash-ref perf 'domParsing 0))
+          (printf "    DOM Interactive:  ~a ms~n" (hash-ref perf 'domInteractive 0))
+          (printf "    DOM Complete:     ~a ms~n" (hash-ref perf 'domComplete 0)))
 
-  (printf "~nResources:~n")
-  (printf "  Total Requests:     ~a~n" (hash-ref resources 'totalRequests 0))
-  (printf "  Total Transfer:     ~a KB~n" (quotient total-bytes 1024))
+        (printf "~nResources:~n")
+        (printf "  Total Requests:     ~a~n" (hash-ref resources 'totalRequests 0))
+        (printf "  Total Transfer:     ~a KB~n" (quotient total-bytes 1024))
 
-  (when verbose
-    (printf "~n  By Resource Type:~n")
-    (for ([(type stats) (in-hash by-type)])
-      (printf "    ~a: ~a requests, ~a KB~n"
-              type
-              (hash-ref stats 'count 0)
-              (quotient (hash-ref stats 'totalSize 0) 1024))))
+        (when verbose
+          (printf "~n  By Resource Type:~n")
+          (for ([(type stats) (in-hash by-type)])
+            (printf "    ~a: ~a requests, ~a KB~n"
+                    type
+                    (hash-ref stats 'count 0)
+                    (quotient (hash-ref stats 'totalSize 0) 1024))))
 
-  ;; Content Analysis
-  (printf "~n=== Content Analysis ===~n~n")
-  (cond
-    [(< dynamic-score 20)
-     (printf "  Content Type: Static~n")
-     (printf "  The page has minimal JavaScript. Direct HTTP should work fine.~n")
-     (printf "  Recommendation: Use -s direct for faster crawling~n")]
-    [(< dynamic-score 50)
-     (printf "  Content Type: Light JavaScript~n")
-     (printf "  The page has some JavaScript but may work with direct HTTP.~n")
-     (printf "  Recommendation: Try -s direct first, use -s playwright if content missing~n")]
-    [else
-     (printf "  Content Type: Dynamic/SPA~n")
-     (printf "  The page relies heavily on JavaScript for content.~n")
-     (printf "  Recommendation: Use -s playwright for full content~n")])
+        ;; Content Analysis
+        (printf "~n=== Content Analysis ===~n~n")
+        (cond
+          [(< dynamic-score 20)
+           (printf "  Content Type: Static~n")
+           (printf "  The page has minimal JavaScript. Direct HTTP should work fine.~n")
+           (printf "  Recommendation: Use -s direct for faster crawling~n")]
+          [(< dynamic-score 50)
+           (printf "  Content Type: Light JavaScript~n")
+           (printf "  The page has some JavaScript but may work with direct HTTP.~n")
+           (printf "  Recommendation: Try -s direct first, use -s playwright if content missing~n")]
+          [else
+           (printf "  Content Type: Dynamic/SPA~n")
+           (printf "  The page relies heavily on JavaScript for content.~n")
+           (printf "  Recommendation: Use -s playwright for full content~n")])
 
-  (when verbose
-    (printf "~n  Dynamic Score: ~a/100~n" dynamic-score)
-    (printf "  Factors: JS=~ams, XHR/Fetch=~a, Scripts=~a, NetworkDelay=~ams~n"
-            js-time (+ xhr-count fetch-count) script-requests network-idle-delay))
+        (when verbose
+          (printf "~n  Dynamic Score: ~a/100~n" dynamic-score)
+          (printf "  Factors: JS=~ams, XHR/Fetch=~a, Scripts=~a, NetworkDelay=~ams~n"
+                  js-time (+ xhr-count fetch-count) script-requests network-idle-delay))
 
-  (printf "~n=== Recommended Scraping Parameters ===~n~n")
-  (printf "  --pw-delay ~a        # Wait for JS to complete~n"
-          (hash-ref recommendations 'pwDelay 5000))
-  (printf "  --pw-scroll-delay ~a  # Delay between scrolls~n"
-          (hash-ref recommendations 'scrollDelay 1000))
-  (printf "  --timeout ~a      # Request timeout~n"
-          (hash-ref recommendations 'timeout 30000))
+        (printf "~n=== Recommended Scraping Parameters ===~n~n")
+        (printf "  --pw-delay ~a        # Wait for JS to complete~n"
+                (hash-ref recommendations 'pwDelay 5000))
+        (printf "  --pw-scroll-delay ~a  # Delay between scrolls~n"
+                (hash-ref recommendations 'scrollDelay 1000))
+        (printf "  --timeout ~a      # Request timeout~n"
+                (hash-ref recommendations 'timeout 30000))
 
-  (printf "~nProbe completed in ~a ms~n" probe-time)
+        (printf "~nProbe completed in ~a ms~n" probe-time)))
 
   ;; Output to file if requested
   (when output-file
@@ -831,25 +850,34 @@ Command-line interface for the production web crawler with service fallbacks.
 ;; @function{cmd-health}
 ;; @description{Check service health}
 (define (cmd-health #:config [config-file #f]
-                   #:verbose [verbose #f])
-  
-  (setup-crawler config-file verbose)
-  
+                    #:verbose [verbose #f]
+                    #:format [format #f])
+
+  (setup-crawler config-file (and verbose (not (eq? format 'json))))
+
   (define crawler (create-crawler-from-config))
-  
-  (printf "Checking service health...~n")
+
+  (when (and verbose (not (eq? format 'json)))
+    (printf "Checking service health...~n"))
+
   (define health (health-check crawler))
-  
-  (printf "Overall Status: ~a~n" (health-status-status health))
-  (printf "Uptime: ~a seconds~n" (health-status-uptime health))
-  
-  (printf "~nService Health:~n")
-  (for ([(service healthy?) (in-hash (health-status-services health))])
-    (printf "  ~a: ~a~n" service (if healthy? "✓ Healthy" "✗ Unhealthy")))
-  
-  (when verbose
-    (printf "~nDetailed Health Status:~n")
-    (pretty-print (health-status->hash health))))
+
+  (if (eq? format 'json)
+      (let* ([raw-health (health-status->hash health)]
+             [h1 (hash-set raw-health 'status (symbol->string (hash-ref raw-health 'status)))]
+             [json-health (hash-set h1 'uptime (exact->inexact (hash-ref h1 'uptime)))])
+        (displayln (jsexpr->string json-health #:encode 'control)))
+      (begin
+        (printf "Overall Status: ~a~n" (health-status-status health))
+        (printf "Uptime: ~a seconds~n" (health-status-uptime health))
+
+        (printf "~nService Health:~n")
+        (for ([(service healthy?) (in-hash (health-status-services health))])
+          (printf "  ~a: ~a~n" service (if healthy? "✓ Healthy" "✗ Unhealthy")))
+
+        (when verbose
+          (printf "~nDetailed Health Status:~n")
+          (pretty-print (health-status->hash health))))))
 
 ;; @function{cmd-test}
 ;; @description{Test individual services}
@@ -926,18 +954,28 @@ Command-line interface for the production web crawler with service fallbacks.
 
 ;; @function{cmd-services}
 ;; @description{List available services}
-(define (cmd-services #:verbose [verbose #f])
-  (printf "Available Crawling Services:~n~n")
-  
+(define (cmd-services #:verbose [verbose #f]
+                      #:format [format #f])
   (define services (get-available-services))
-  
-  (for ([service services])
-    (printf "• ~a~n" service)
-    (when verbose
-      (define healthy (test-service-health service))
-      (printf "  Status: ~a~n" (if healthy "✓ Available" "✗ Unavailable"))))
-  
-  (printf "~nTotal services: ~a~n" (length services)))
+
+  (if (eq? format 'json)
+      (let ([data (hash 'services (map symbol->string services)
+                        'count (length services)
+                        'statuses (if verbose
+                                      (for/hash ([s services])
+                                        (values s (test-service-health s)))
+                                      (hash)))])
+        (displayln (jsexpr->string data #:encode 'control)))
+      (begin
+        (printf "Available Crawling Services:~n~n")
+
+        (for ([service services])
+          (printf "• ~a~n" service)
+          (when verbose
+            (define healthy (test-service-health service))
+            (printf "  Status: ~a~n" (if healthy "✓ Available" "✗ Unavailable"))))
+
+        (printf "~nTotal services: ~a~n" (length services)))))
 
 ;; @function{cmd-monitor}
 ;; @description{Real-time monitoring dashboard}
@@ -1179,10 +1217,12 @@ Command-line interface for the production web crawler with service fallbacks.
    #:once-each
    [("-v" "--verbose") "Enable verbose output with detailed timing"
     (verbose-mode #t)]
+   [("-f" "--format") fmt "Output format: json"
+    (output-format-param (string->symbol fmt))]
    [("-o" "--output") file "Save results to JSON file"
     (output-file-param file)]
-   #:args remaining
-   remaining))
+   #:args ()
+   (void)))
 
 ;; @function{parse-crawl-args}
 ;; @description{Parse crawl command arguments after the URL}
@@ -1251,6 +1291,50 @@ Command-line interface for the production web crawler with service fallbacks.
     (selected-services (cons (string->symbol service) (selected-services)))]
    #:args remaining
    remaining))
+
+;; @function{parse-services-args}
+;; @description{Parse services command arguments}
+(define (parse-services-args args)
+  (command-line
+   #:program "ar-crawl services"
+   #:argv args
+   #:once-each
+   [("-v" "--verbose") "Check and display availability status for each service"
+    (verbose-mode #t)]
+   [("-f" "--format") fmt "Output format: json"
+    (output-format-param (string->symbol fmt))]
+   #:args ()
+   (void)))
+
+;; @function{parse-health-args}
+;; @description{Parse health command arguments}
+(define (parse-health-args args)
+  (command-line
+   #:program "ar-crawl health"
+   #:argv args
+   #:once-each
+   [("-c" "--config") config-file "Path to configuration file"
+    (config-file-path config-file)]
+   [("-v" "--verbose") "Show detailed health information"
+    (verbose-mode #t)]
+   [("-f" "--format") fmt "Output format: json"
+    (output-format-param (string->symbol fmt))]
+   #:args ()
+   (void)))
+
+;; @function{parse-stats-args}
+;; @description{Parse stats command arguments after the file}
+(define (parse-stats-args args)
+  (command-line
+   #:program "ar-crawl stats"
+   #:argv args
+   #:once-each
+   [("-v" "--verbose") "Enable verbose output"
+    (verbose-mode #t)]
+   [("-f" "--format") fmt "Output format: json"
+    (output-format-param (string->symbol fmt))]
+   #:args ()
+   (void)))
 
 (define (main)
   (define args (vector->list (current-command-line-arguments)))
@@ -1342,8 +1426,10 @@ Command-line interface for the production web crawler with service fallbacks.
                         #:xpath (xpath-filter-param))]
 
        [(health)
+        (parse-health-args post-cmd-args)
         (cmd-health #:config (config-file-path)
-                    #:verbose (verbose-mode))]
+                    #:verbose (verbose-mode)
+                    #:format (output-format-param))]
 
        [(test)
         (cmd-test #:config (config-file-path)
@@ -1359,7 +1445,9 @@ Command-line interface for the production web crawler with service fallbacks.
         (cmd-config (string->symbol (car post-cmd-args)))]
 
        [(services)
-        (cmd-services #:verbose (verbose-mode))]
+        (parse-services-args post-cmd-args)
+        (cmd-services #:verbose (verbose-mode)
+                      #:format (output-format-param))]
 
        [(monitor)
         (cmd-monitor #:config (config-file-path))]
@@ -1396,13 +1484,15 @@ Command-line interface for the production web crawler with service fallbacks.
        [(stats)
         (when (empty? post-cmd-args)
           (printf "Error: Database file required for stats command~n~n")
-          (printf "Usage: ar-crawl stats <file.db>~n")
+          (printf "Usage: ar-crawl stats <file.db> [options]~n")
           (exit 1))
         (define db-file (car post-cmd-args))
+        (parse-stats-args (cdr post-cmd-args))
         (with-handlers ([exn:fail? (lambda (e)
                                      (eprintf "Error analyzing stats: ~a~n" (exn-message e))
                                      (exit 1))])
-           (cmd-stats db-file #:verbose (verbose-mode)))]
+           (cmd-stats db-file #:verbose (verbose-mode)
+                      #:format (output-format-param)))]
 
        [(probe)
         (when (empty? post-cmd-args)
@@ -1415,7 +1505,8 @@ Command-line interface for the production web crawler with service fallbacks.
         (with-playwright-cleanup
           (cmd-probe probe-target-url
                      #:verbose (verbose-mode)
-                     #:output (output-file-param)))]
+                     #:output (output-file-param)
+                     #:format (output-format-param)))]
 
        [(help)
         (if (empty? post-cmd-args)
