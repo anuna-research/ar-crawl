@@ -1,9 +1,79 @@
-# AR-Crawl - Production Web Crawler
+# AR-Crawl - Agent-First Web Crawler
 
-A robust, production-ready web crawler with service fallbacks and **comprehensive site crawling capabilities**, built in Racket. Supports multiple crawling services including FireCrawl, ScrapingBee, Browserless, and ScraperAPI with automatic failover.
+A robust, production-ready web crawler designed as a **tool for LLM agents** to use. Built in Racket with service fallbacks and **comprehensive site crawling capabilities**. Provides clean, structured output (JSON, CSV, SQLite) that any LLM agent can process - **AI is in your agent, not in the tool**.
+
+Supports multiple crawling services including FireCrawl, ScrapingBee, Browserless, and ScraperAPI with automatic failover.
+
+## Agent-First Architecture
+
+**AR-Crawl is designed for LLM agents to use as a reliable web crawling tool.**
+
+### Design Philosophy: Separation of Concerns
+
+Unlike tools that embed AI capabilities into the crawler itself, AR-Crawl follows a **separation of concerns** approach:
+
+- **AR-Crawl's job**: Reliably crawl websites and provide clean, structured data
+- **Your LLM agent's job**: Process the data using its intelligence
+
+This architecture provides:
+- ✅ **LLM-agnostic**: Works with any LLM (Claude, GPT, Llama, local models, etc.)
+- ✅ **Maximum flexibility**: Agents can process data for any purpose
+- ✅ **No vendor lock-in**: No dependency on specific AI services
+- ✅ **Cost-effective**: No LLM API costs for crawling; agents process data separately
+- ✅ **Clean separation**: Crawling logic is independent of AI processing logic
+
+### Example: LLM Agent Workflow
+
+```
+┌──────────────┐
+│  LLM Agent   │  (Claude Code, GPT Agent, etc.)
+│  e.g. Claude │
+│    Code      │
+└──────┬───────┘
+       │ 1. Invokes ar-crawl CLI
+       ▼
+┌──────────────┐
+│  ar-crawl    │  Returns JSON/SQLite/CSV
+└──────┬───────┘
+       │ 2. Agent receives structured data
+       ▼
+┌──────────────┐
+│  LLM Agent   │  3. Agent analyzes/processes data
+│  Processing  │     using its own LLM capabilities
+└──────────────┘
+```
+
+**Example Agent Task:**
+```bash
+User: "Analyze sentiment in recent tech news"
+
+Agent workflow:
+1. Agent invokes: ar-crawl crawl-site https://technews.com --output news.db --format sqlite
+2. Agent queries SQLite DB for article text
+3. Agent uses its LLM to analyze sentiment for each article
+4. Agent presents findings to user
+```
+
+**Key Point**: The LLM agent uses AR-Crawl as a tool to get data, then applies its own intelligence. The AI is in the agent, not in AR-Crawl.
+
+### Why Agent-First Architecture Matters
+
+**Compared to AI-integrated tools** (like those with built-in LLM extraction):
+- ✅ **No LLM vendor lock-in** - Use any AI model (Claude, GPT, Llama, local models)
+- ✅ **Lower costs** - No LLM API charges for crawling; process data when/how you want
+- ✅ **Maximum flexibility** - Same crawl data can be used for multiple AI tasks
+- ✅ **Simpler architecture** - Pure crawling tool that does one thing well
+- ✅ **Future-proof** - Switch LLMs without changing your crawling infrastructure
 
 ## Features
 
+### Agent-Friendly Features
+- **🤖 LLM-Agent Ready**: Designed specifically as a tool for LLM agents to invoke
+- **📊 Structured Output**: Clean JSON, CSV, and SQLite formats that any LLM can process
+- **🧠 LLM-Agnostic**: Works with Claude, GPT, Llama, or any AI agent architecture
+- **🔌 No AI Coupling**: Pure crawling tool - your agent provides the intelligence
+
+### Crawling Capabilities
 - **🆓 No API Keys Required**: Built-in direct HTTP service works immediately
 - **🕷️ Site-Wide Crawling**: Intelligent link discovery and following with regex filtering
 - **🎭 Local Playwright Integration**: Built-in browser rendering for JavaScript-heavy sites (auto-spawns)
@@ -13,11 +83,13 @@ A robust, production-ready web crawler with service fallbacks and **comprehensiv
 - **URL Filtering**: Advanced regex-based URL pattern matching and domain restrictions
 - **Queue Management**: Efficient crawl queue with deduplication and depth control
 - **Progress Tracking**: Real-time progress reporting and comprehensive statistics
+
+### Data & Operations
+- **Multiple Output Formats**: JSON, CSV, Markdown, and SQLite database export capabilities with full SQL querying support
+- **XPath Data Extraction**: Extract structured data from crawl results using XPath expressions
 - **Robust Error Handling**: Comprehensive retry mechanisms and error recovery
 - **Production Ready**: Docker support, monitoring, health checks, and logging
 - **CLI Interface**: Easy-to-use command-line tool with extensive options
-- **Multiple Output Formats**: JSON, CSV, Markdown, and SQLite database export capabilities with full SQL querying support
-- **XPath Data Extraction**: Extract structured data from crawl results using XPath expressions
 - **Configuration Management**: Flexible JSON-based configuration with environment variable support
 - **Real-time Monitoring**: Built-in dashboard and metrics collection
 
@@ -1110,4 +1182,4 @@ For support and questions:
 
 ---
 
-**AR-Crawl** - Production-ready web crawling with service fallbacks.
+**AR-Crawl** - Agent-first web crawler designed as a tool for LLM agents. Production-ready with service fallbacks. **AI is in your agent, not in your crawler.**
