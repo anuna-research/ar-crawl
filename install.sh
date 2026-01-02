@@ -33,25 +33,27 @@ step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # Detect OS and architecture
 detect_platform() {
-  OS="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')" || true
-  ARCH="$(uname -m 2>/dev/null)" || true
+  local detected_os detected_arch
 
-  if [[ -z "$OS" ]]; then
+  detected_os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  detected_arch="$(uname -m 2>/dev/null)"
+
+  if [[ -z "$detected_os" ]]; then
     error "Could not detect operating system (uname -s failed)"
   fi
 
-  if [[ -z "$ARCH" ]]; then
+  if [[ -z "$detected_arch" ]]; then
     error "Could not detect architecture (uname -m failed)"
   fi
 
-  case "$OS" in
+  case "$detected_os" in
     linux*)  OS="linux" ;;
     darwin*) OS="macos" ;;
     msys*|mingw*|cygwin*) error "Windows is not supported. Use WSL or Docker instead." ;;
-    *)       error "Unsupported OS: $OS" ;;
+    *)       error "Unsupported OS: $detected_os" ;;
   esac
 
-  case "$ARCH" in
+  case "$detected_arch" in
     x86_64|amd64)  ARCH="x86_64" ;;
     arm64|aarch64)
       if [[ "$OS" == "macos" ]]; then
@@ -60,10 +62,16 @@ detect_platform() {
         error "ARM64 Linux is not currently supported. Use Docker instead."
       fi
       ;;
-    *)       error "Unsupported architecture: $ARCH" ;;
+    *)       error "Unsupported architecture: $detected_arch" ;;
   esac
 
   PLATFORM="${OS}-${ARCH}"
+
+  # Verify variables are set before continuing
+  if [[ -z "$OS" ]] || [[ -z "$ARCH" ]] || [[ -z "$PLATFORM" ]]; then
+    error "Platform detection failed: OS=$OS, ARCH=$ARCH, PLATFORM=$PLATFORM"
+  fi
+
   info "Detected platform: $PLATFORM"
 }
 
