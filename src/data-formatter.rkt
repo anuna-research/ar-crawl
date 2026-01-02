@@ -33,6 +33,13 @@
        path-string?
        hash?
        boolean?)]
+
+  ;; Query helpers for SQLite
+  [load-crawled-pages
+   (-> path-string? (listof hash?))]
+
+  [analyze-crawl-stats
+   (-> path-string? hash?)]
   
   ;; Stream formatter for large datasets
   [create-streaming-formatter
