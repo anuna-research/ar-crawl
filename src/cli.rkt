@@ -505,6 +505,100 @@ Command-line interface for the production web crawler with service fallbacks.
                   ;; Keep value as-is
                   [else val])))))
 
+;; ============================================================================
+;; File Download Helpers
+;; ============================================================================
+
+;; @function{sanitize-filename}
+;; @description{Sanitize filename for safe saving}
+(define (sanitize-filename filename)
+  (regexp-replace* #px"[^a-zA-Z0-9._-]" filename "_"))
+
+;; @function{extract-filename-from-url}
+;; @description{Extract filename from URL}
+(define (extract-filename-from-url url-str)
+  (with-handlers ([exn:fail? (lambda (e) "download")])
+    (let* ([url (string->url url-str)]
+           [path-parts (url-path url)]
+           [last-part (if (empty? path-parts)
+                          (path/param "" '())
+                          (last path-parts))]
+           [filename (path/param-path last-part)])
+      (if (or (string=? filename "") (string-suffix? filename "/"))
+          "download"
+          (sanitize-filename filename)))))
+
+;; @function{download-file}
+;; @description{Download a file from URL to local path}
+(define (download-file url-str dest-path #:verbose [verbose #f])
+  (with-handlers ([exn:fail? (lambda (e)
+                               (when verbose
+                                 (printf "Error downloading ~a: ~a~n" url-str (exn-message e)))
+                               #f)])
+    (when verbose
+      (printf "Downloading: ~a~n" url-str))
+
+    ;; Use net/url library for simple HTTP download
+    (define in-port (get-pure-port (string->url url-str)))
+    (call-with-output-file dest-path
+      (lambda (out-port)
+        (copy-port in-port out-port))
+      #:exists 'replace)
+    (close-input-port in-port)
+    #t))
+
+;; @function{download-files-from-results}
+;; @description{Download files from extraction results}
+(define (download-files-from-results results download-dir
+                                     #:rate-limit [rate-limit-ms 0]
+                                     #:skip-existing [skip-existing #f]
+                                     #:verbose [verbose #f])
+  (make-directory* download-dir)
+
+  (define total (length results))
+  (define downloaded 0)
+  (define skipped 0)
+  (define failed 0)
+
+  (for ([result results]
+        [idx (in-naturals 1)])
+    (let* ([url (hash-ref result 'url #f)]
+           [filename (if url (extract-filename-from-url url) #f)]
+           [dest-path (if filename (build-path download-dir filename) #f)])
+
+      (when (and url filename dest-path)
+        (cond
+          [(and skip-existing (file-exists? dest-path))
+           (when verbose
+             (printf "[~a/~a] Skipping (exists): ~a~n" idx total filename))
+           (set! skipped (+ skipped 1))]
+
+          [else
+           (when verbose
+             (printf "[~a/~a] Downloading: ~a~n" idx total filename))
+
+           (if (download-file url dest-path #:verbose verbose)
+               (set! downloaded (+ downloaded 1))
+               (begin
+                 (set! failed (+ failed 1))
+                 (when verbose
+                   (printf "Failed to download: ~a~n" url))))
+
+           ;; Rate limiting
+           (when (and (> rate-limit-ms 0) (< idx total))
+             (sleep (/ rate-limit-ms 1000.0)))]))))
+
+  (when verbose
+    (printf "~nDownload complete:~n")
+    (printf "  Downloaded: ~a~n" downloaded)
+    (printf "  Skipped: ~a~n" skipped)
+    (printf "  Failed: ~a~n" failed))
+
+  (hash 'downloaded downloaded
+        'skipped skipped
+        'failed failed
+        'total total))
+
 ;; @function{cmd-extract}
 ;; @description{Extract structured data from crawl results using XPath or file type filtering}
 (define (cmd-extract input-file
@@ -516,6 +610,10 @@ Command-line interface for the production web crawler with service fallbacks.
                      #:output [output-file #f]
                      #:format [format 'json]
                      #:resolve-urls [resolve-urls #f]
+                     #:download [download #f]
+                     #:download-dir [download-dir "downloads"]
+                     #:rate-limit [rate-limit 0]
+                     #:skip-existing [skip-existing #f]
                      #:verbose [verbose #f])
 
   ;; Determine extraction mode
@@ -647,13 +745,31 @@ Command-line interface for the production web crawler with service fallbacks.
   (when verbose
     (printf "Extracted ~a records~n" (length final-results)))
 
+  ;; Download files if requested
+  (define download-stats
+    (if download
+        (begin
+          (when verbose
+            (printf "~nDownloading files to: ~a~n" download-dir))
+          (download-files-from-results final-results download-dir
+                                       #:rate-limit rate-limit
+                                       #:skip-existing skip-existing
+                                       #:verbose verbose))
+        #f))
+
   ;; Output results
   (define output-data
     (hash 'data final-results
-          'metadata (hash 'source input-file
-                         'xpath_map xpath-map
-                         'record_count (length final-results)
-                         'urls_resolved resolve-urls)
+          'metadata (if download-stats
+                        (hash 'source input-file
+                              'xpath_map xpath-map
+                              'record_count (length final-results)
+                              'urls_resolved resolve-urls
+                              'download_stats download-stats)
+                        (hash 'source input-file
+                              'xpath_map xpath-map
+                              'record_count (length final-results)
+                              'urls_resolved resolve-urls))
           'timestamp (generate-timestamp)))
 
   (if output-file
@@ -1348,6 +1464,14 @@ Command-line interface for the production web crawler with service fallbacks.
     (output-format-param (string->symbol fmt))]
    [("--resolve-urls") "Resolve relative URLs to absolute URLs using source_url as base"
     (extract-resolve-urls-param #t)]
+   [("--download") "Download extracted files to local directory"
+    (extract-download-param #t)]
+   [("--download-dir") dir "Directory for downloaded files (default: downloads)"
+    (extract-download-dir-param dir)]
+   [("--rate-limit") ms "Rate limit between downloads in milliseconds (default: 0)"
+    (extract-rate-limit-param (string->number ms))]
+   [("--skip-existing") "Skip downloading files that already exist"
+    (extract-skip-existing-param #t)]
    [("-v" "--verbose") "Show detailed progress"
     (verbose-mode #t)]
    #:multi
@@ -1635,6 +1759,10 @@ Command-line interface for the production web crawler with service fallbacks.
                      #:output (output-file-param)
                      #:format (output-format-param)
                      #:resolve-urls (extract-resolve-urls-param)
+                     #:download (extract-download-param)
+                     #:download-dir (extract-download-dir-param)
+                     #:rate-limit (extract-rate-limit-param)
+                     #:skip-existing (extract-skip-existing-param)
                      #:verbose (verbose-mode))]
 
        [(sample)
@@ -2047,6 +2175,10 @@ Command-line interface for the production web crawler with service fallbacks.
   (printf "  -o, --output <file>      Output file (stdout if not specified)~n")
   (printf "  -f, --format <fmt>       Output format: json (default), csv, sqlite~n")
   (printf "  --resolve-urls           Resolve relative URLs to absolute URLs~n")
+  (printf "  --download               Download extracted files to local directory~n")
+  (printf "  --download-dir <dir>     Directory for downloads (default: downloads)~n")
+  (printf "  --rate-limit <ms>        Rate limit between downloads in ms (default: 0)~n")
+  (printf "  --skip-existing          Skip downloading files that already exist~n")
   (printf "  -v, --verbose            Show detailed progress~n~n")
 
   (printf "FILE TYPES~n")
@@ -2112,6 +2244,11 @@ Command-line interface for the production web crawler with service fallbacks.
 
   (printf "  # Extract all PDFs for download~n")
   (displayln "  ar-crawl extract page.json --file-type pdf --resolve-urls -o pdfs.json")
+  (newline)
+
+  (printf "  # Extract and download all PDFs directly~n")
+  (displayln "  ar-crawl extract page.json --file-type pdf --resolve-urls \\")
+  (displayln "    --download --download-dir pdfs/ -v")
   (newline))
 
 ;; @function{show-sample-help}
@@ -2217,6 +2354,10 @@ Command-line interface for the production web crawler with service fallbacks.
 (define extract-resolve-urls-param (make-parameter #f))
 (define extract-file-types-param (make-parameter '()))
 (define extract-extensions-param (make-parameter '()))
+(define extract-download-param (make-parameter #f))
+(define extract-download-dir-param (make-parameter "downloads"))
+(define extract-rate-limit-param (make-parameter 0))
+(define extract-skip-existing-param (make-parameter #f))
 
 ;; Sample command parameters
 (define sample-index-param (make-parameter 0))
