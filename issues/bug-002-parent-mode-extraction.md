@@ -2,7 +2,7 @@
 
 ## Status
 - [x] Confirmed
-- [ ] Fixed
+- [x] Fixed
 
 ## Description
 When using `ar-crawl extract` with `--parent` and `--fields` to extract repeating items (like links, products, articles), the extraction returns `false` for fields even when the XPath expressions should match valid elements in the HTML.
@@ -125,8 +125,40 @@ ar-crawl extract page.json \
 
 **Actual result**: Returns false for all fields.
 
-## Investigation Needed
+## Root Cause
 
-- Is the relative XPath context (`.//` vs `//`) being handled correctly?
-- Are text nodes (`./@href`, `./text()`) being extracted properly in parent mode?
-- Does parent mode work when there are multiple matching parent elements?
+The issue was in the `extract-items` function in `src/html-extractor.rkt`. When applying relative XPath expressions to parent nodes, the code was wrapping each parent node in a `*TOP*` wrapper:
+
+```racket
+[nodes (xpath-fn (list '*TOP* parent))]
+```
+
+This caused issues with current-node XPath queries:
+- `./@href` (attribute of current node) looked for attributes on `*TOP*` instead of the parent element
+- `./text()` (text of current node) looked for text of `*TOP*` instead of the parent element
+- Descendant queries like `.//tag` worked because they search descendants of `*TOP*`, which includes the parent
+
+## Fix
+
+Changed line 128 in `src/html-extractor.rkt` to apply XPath directly to the parent node without the `*TOP*` wrapper:
+
+```racket
+[nodes (xpath-fn parent)]
+```
+
+Also updated the value extraction logic to properly handle:
+- Text strings (returned by `./text()`)
+- Attribute nodes (returned by `./@href`) - format: `(attr-name "value")`
+- Element nodes (returned by `.//tag`) - format: `(tag ... content)`
+
+The fix correctly distinguishes between these node types by checking:
+1. If it's a plain string → use directly
+2. If it's a 2-element list `(symbol string)` → extract attribute value
+3. Otherwise → extract text using `sxml->text`
+
+## Verification
+
+All existing tests pass, and the fix now correctly handles:
+- Current node queries: `./@href`, `./text()`
+- Descendant queries: `.//tag`, `.//tag/@attr`
+- Both work correctly in parent mode extraction

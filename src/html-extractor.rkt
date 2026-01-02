@@ -121,15 +121,27 @@
            [parents (parent-fn sxml)])
       (for/list ([parent parents])
         (for/hash ([(field rel-xpath) (in-hash field-xpaths)])
-          ;; Use sxpath on the parent node directly
+          ;; Use sxpath on the parent node directly (without *TOP* wrapper)
+          ;; This allows both current node queries (./@href, ./text()) and
+          ;; descendant queries (.//tag) to work correctly
           (let* ([xpath-fn (make-xpath rel-xpath)]
-                 [nodes (xpath-fn (list '*TOP* parent))]
+                 [nodes (xpath-fn parent)]
                  [value (if (empty? nodes)
                             #f
                             (let ([first-node (car nodes)])
-                              (if (string? first-node)
-                                  first-node
-                                  (sxml->text first-node))))])
+                              (cond
+                                ;; Handle text strings directly
+                                [(string? first-node) first-node]
+                                ;; Handle attribute nodes: (attr-name "value")
+                                ;; Attributes have exactly 2 elements and no @ attribute list
+                                [(and (list? first-node)
+                                      (= (length first-node) 2)
+                                      (symbol? (car first-node))
+                                      (string? (cadr first-node))
+                                      (not (eq? (car first-node) '@)))
+                                 (cadr first-node)]
+                                ;; Handle element nodes
+                                [else (sxml->text first-node)])))])
             (values field value)))))))
 
 ;; ============================================================================
