@@ -2,22 +2,19 @@
 
 ## Current Issues
 
-### Code Bugs
-*Discovered: 2026-01-02*
+### Recently Fixed (2026-01-02)
 
-- [ ] **Probe command JSON output has undefined variables**
-  - In `src/cli.rkt:649-676`, the JSON output section references variables
-    before they're defined: `perf`, `by-type`, `total-bytes`, `network-requests`,
-    `dynamic-score`, `js-time`, `xhr-count`, `fetch-count`, etc.
-  - This will cause errors when `-f json` is specified
-  - Location: `cmd-probe` function, JSON output block
-  - Fix: Move variable definitions before the JSON output block or restructure
+- [x] **Probe command JSON output has undefined variables**
+  - Fixed by moving all metric computations (perf, total-bytes, by-type,
+    network-requests, network-by-type, js-time, xhr-count, fetch-count,
+    script-requests, network-idle-delay, dynamic-score) to the top of
+    `cmd-probe` function before any output formatting
+  - Location: `src/cli.rkt:631-651`
 
-- [ ] **Probe command redundant code section**
-  - Lines 649-676 contain JSON output logic with duplicate variable assignments
-    that conflict with the text output section (lines 696-753)
-  - The code appears to be from a refactoring that was not completed
-  - Location: `cmd-probe` function
+- [x] **Probe command redundant code section**
+  - Removed duplicate variable definitions from verbose and content analysis
+    sections; all variables are now computed once at function start
+  - Location: `src/cli.rkt` `cmd-probe` function
 
 ## Future Enhancements
 

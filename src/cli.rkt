@@ -628,44 +628,16 @@
   (define recommendations (hash-ref response 'recommendations (hash)))
   (define probe-time (hash-ref response 'probeTime 0))
 
-  ;; Display results
-  (printf "~n=== Page Load Metrics ===~n~n")
-
-  (printf "Timing:~n")
-  (printf "  DOM Content Loaded: ~a ms~n" (hash-ref timing 'domContentLoaded 0))
-  (printf "  Page Load Complete: ~a ms~n" (hash-ref timing 'loadComplete 0))
-  (printf "  Network Idle:       ~a ms~n" (hash-ref timing 'networkIdleTime 0))
-  (printf "  JS Execution (est): ~a ms~n" (hash-ref timing 'jsExecutionEstimate 0))
-
-  (when verbose
-    (define perf (hash-ref timing 'performance (hash)))
-    (printf "~n  Performance API Details:~n")
-    (printf "    TTFB:             ~a ms~n" (hash-ref perf 'ttfb 0))
-    (printf "    DOM Parsing:      ~a ms~n" (hash-ref perf 'domParsing 0))
-    (printf "    DOM Interactive:  ~a ms~n" (hash-ref perf 'domInteractive 0))
-    (printf "    DOM Complete:     ~a ms~n" (hash-ref perf 'domComplete 0)))
-
-  (printf "~nResources:~n")
-  (printf "  Total Requests:     ~a~n" (hash-ref resources 'totalRequests 0))
+  ;; Compute additional metrics (do this once before output formatting)
+  (define perf (hash-ref timing 'performance (hash)))
   (define total-bytes (hash-ref resources 'totalTransferSize 0))
-  (printf "  Total Transfer:     ~a KB~n" (quotient total-bytes 1024))
-
-  (when verbose
-    (define by-type (hash-ref resources 'byType (hash)))
-    (printf "~n  By Resource Type:~n")
-    (for ([(type stats) (in-hash by-type)])
-      (printf "    ~a: ~a requests, ~a KB~n"
-              type
-              (hash-ref stats 'count 0)
-              (quotient (hash-ref stats 'totalSize 0) 1024))))
-
-  ;; Detect dynamic content
-  (define js-time (hash-ref timing 'jsExecutionEstimate 0))
+  (define by-type (hash-ref resources 'byType (hash)))
   (define network-requests (hash-ref response 'networkRequests (hash)))
   (define network-by-type (hash-ref network-requests 'byType (hash)))
+  (define js-time (hash-ref timing 'jsExecutionEstimate 0))
   (define xhr-count (hash-ref network-by-type 'xmlhttprequest 0))
   (define fetch-count (hash-ref network-by-type 'fetch 0))
-  (define script-stats (hash-ref (hash-ref resources 'byType (hash)) 'script (hash)))
+  (define script-stats (hash-ref by-type 'script (hash)))
   (define script-requests (if (hash? script-stats) (hash-ref script-stats 'count 0) 0))
   (define network-idle-delay (- (hash-ref timing 'networkIdleTime 0)
                                 (hash-ref timing 'loadComplete 0)))
@@ -678,6 +650,35 @@
             (if (> script-requests 20) 25 (if (> script-requests 5) 10 0))
             (if (> network-idle-delay 1000) 15 (if (> network-idle-delay 500) 5 0)))))
 
+  ;; Display results
+  (printf "~n=== Page Load Metrics ===~n~n")
+
+  (printf "Timing:~n")
+  (printf "  DOM Content Loaded: ~a ms~n" (hash-ref timing 'domContentLoaded 0))
+  (printf "  Page Load Complete: ~a ms~n" (hash-ref timing 'loadComplete 0))
+  (printf "  Network Idle:       ~a ms~n" (hash-ref timing 'networkIdleTime 0))
+  (printf "  JS Execution (est): ~a ms~n" (hash-ref timing 'jsExecutionEstimate 0))
+
+  (when verbose
+    (printf "~n  Performance API Details:~n")
+    (printf "    TTFB:             ~a ms~n" (hash-ref perf 'ttfb 0))
+    (printf "    DOM Parsing:      ~a ms~n" (hash-ref perf 'domParsing 0))
+    (printf "    DOM Interactive:  ~a ms~n" (hash-ref perf 'domInteractive 0))
+    (printf "    DOM Complete:     ~a ms~n" (hash-ref perf 'domComplete 0)))
+
+  (printf "~nResources:~n")
+  (printf "  Total Requests:     ~a~n" (hash-ref resources 'totalRequests 0))
+  (printf "  Total Transfer:     ~a KB~n" (quotient total-bytes 1024))
+
+  (when verbose
+    (printf "~n  By Resource Type:~n")
+    (for ([(type stats) (in-hash by-type)])
+      (printf "    ~a: ~a requests, ~a KB~n"
+              type
+              (hash-ref stats 'count 0)
+              (quotient (hash-ref stats 'totalSize 0) 1024))))
+
+  ;; Content Analysis
   (printf "~n=== Content Analysis ===~n~n")
   (cond
     [(< dynamic-score 20)
