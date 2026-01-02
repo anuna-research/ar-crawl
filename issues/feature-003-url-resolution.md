@@ -2,7 +2,7 @@
 
 ## Status
 - [x] Proposed
-- [ ] Implemented
+- [x] Implemented
 
 ## User Perspective
 **As a file-downloader user**, when I extract URLs from a crawled page (especially for images, PDFs, or other downloadable files), I need them to be absolute URLs so I can directly download them using wget, curl, or other download tools.
@@ -113,3 +113,50 @@ This feature is **critical** for the file-downloader user persona. Without it, u
 
 ## Related Issues
 - Could be combined with a `--download` flag in the future to handle downloads directly in ar-crawl
+
+## Implementation
+
+Added `--resolve-urls` flag to the `extract` command that automatically resolves relative URLs to absolute URLs using the `source_url` from each crawled page as the base.
+
+### Changes Made
+
+**File**: `src/cli.rkt`
+
+1. **URL Resolution Functions** (lines 390-444):
+   - `looks-like-url?` - Detects URL-like strings (http://, https://, //, /, ../)
+   - `resolve-url` - Resolves relative URLs to absolute using Racket's `combine-url/relative`
+   - `resolve-urls-in-hash` - Applies URL resolution to all URL fields in extracted data
+
+2. **Command-Line Flag** (line 1263):
+   - Added `--resolve-urls` flag to extract command parser
+
+3. **Integration** (lines 552-559):
+   - Applied URL resolution to extracted results when flag is enabled
+   - Added `urls_resolved` metadata field to output
+
+### URL Types Handled
+
+- **Absolute URLs** (`https://example.com/file.pdf`) → Unchanged
+- **Protocol-relative** (`//cdn.example.com/file.jpg`) → Adds protocol from base (`https://cdn.example.com/file.jpg`)
+- **Root-relative** (`/images/photo.jpg`) → Combines with base domain (`https://example.com/images/photo.jpg`)
+- **Relative** (`../docs/file.pdf`, `file.txt`) → Resolves relative to base path
+
+### Usage Example
+
+```bash
+# Before: relative URLs
+ar-crawl extract page.json --fields '{"images": "//img/@src"}' --format json
+# Output: {images: ["/path/img.jpg", "//cdn.com/img.jpg"]}
+
+# After: absolute URLs
+ar-crawl extract page.json --fields '{"images": "//img/@src"}' --resolve-urls --format json
+# Output: {images: ["https://example.com/path/img.jpg", "https://cdn.com/img.jpg"]}
+```
+
+### Testing
+
+All existing tests pass. Verified with:
+- Single URL fields
+- List of URLs (multiple images)
+- Parent mode extraction
+- Various URL types (absolute, protocol-relative, root-relative, relative)
