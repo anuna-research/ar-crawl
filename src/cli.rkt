@@ -384,6 +384,68 @@ Command-line interface for the production web crawler with service fallbacks.
           (output-site-results site-results output-file effective-format verbose)))))
 
 ;; ============================================================================
+;; File Type Filtering Helpers
+;; ============================================================================
+
+;; @function{file-type->extensions}
+;; @description{Map file type names to their extensions}
+(define (file-type->extensions type-name)
+  (case (string->symbol type-name)
+    [(pdf) '("pdf")]
+    [(image) '("jpg" "jpeg" "png" "gif" "svg" "webp" "bmp" "ico")]
+    [(video) '("mp4" "webm" "mov" "avi" "mkv" "flv" "wmv")]
+    [(audio) '("mp3" "wav" "ogg" "flac" "aac" "m4a")]
+    [(archive) '("zip" "tar" "tar.gz" "tgz" "rar" "7z" "bz2")]
+    [(document) '("pdf" "doc" "docx" "txt" "rtf" "odt")]
+    [(spreadsheet) '("xls" "xlsx" "csv" "ods")]
+    [(presentation) '("ppt" "pptx" "odp")]
+    [(code) '("js" "py" "rb" "java" "cpp" "c" "go" "rs" "sh")]
+    [else '()]))
+
+;; @function{extract-extension-from-url}
+;; @description{Extract file extension from URL (handles query params and fragments)}
+(define (extract-extension-from-url url-str)
+  (with-handlers ([exn:fail? (lambda (e) #f)])
+    (if (not (string? url-str))
+        #f
+        (let* ([url-without-query (car (string-split url-str "?"))]
+               [url-without-fragment (car (string-split url-without-query "#"))]
+               [parts (string-split url-without-fragment ".")])
+          (if (> (length parts) 1)
+              (string-downcase (last parts))
+              #f)))))
+
+;; @function{url-has-extension?}
+;; @description{Check if URL ends with one of the given extensions (case-insensitive)}
+(define (url-has-extension? url-str extensions)
+  (let ([ext (extract-extension-from-url url-str)])
+    (and ext (member ext extensions))))
+
+;; @function{extract-files-from-items}
+;; @description{Extract files from crawl result items matching extensions}
+(define (extract-files-from-items items extensions)
+  (apply append
+         (for/list ([item items]
+                    #:when (hash? item))
+           (let ([content (hash-ref item 'content "")]
+                 [url (hash-ref item 'url "")])
+             ;; Extract all links with href attributes
+             (let* ([sxml (html->sxml content)]
+                    [link-fn (make-xpath "//a[@href]")]
+                    [links (link-fn sxml)])
+               (filter-map
+                (lambda (link)
+                  (let ([href (sxml-attr link 'href)]
+                        [text (sxml->text link)])
+                    (and href
+                         (url-has-extension? href extensions)
+                         (hash 'url href
+                               'link_text text
+                               'extension (extract-extension-from-url href)
+                               'source_url url))))
+                links))))))
+
+;; ============================================================================
 ;; URL Resolution Helpers
 ;; ============================================================================
 
@@ -444,19 +506,34 @@ Command-line interface for the production web crawler with service fallbacks.
                   [else val])))))
 
 ;; @function{cmd-extract}
-;; @description{Extract structured data from crawl results using XPath}
+;; @description{Extract structured data from crawl results using XPath or file type filtering}
 (define (cmd-extract input-file
                      #:xpath [xpath-map-str #f]
                      #:parent [parent-xpath #f]
                      #:fields [field-xpaths-str #f]
+                     #:file-types [file-types '()]
+                     #:extensions [extensions '()]
                      #:output [output-file #f]
                      #:format [format 'json]
                      #:resolve-urls [resolve-urls #f]
                      #:verbose [verbose #f])
 
+  ;; Determine extraction mode
+  (define file-type-mode? (or (not (empty? file-types)) (not (empty? extensions))))
+
+  ;; Build extensions list from file types
+  (define all-extensions
+    (if file-type-mode?
+        (remove-duplicates
+         (append extensions
+                 (apply append (map file-type->extensions file-types))))
+        '()))
+
   ;; Parse xpath-map from JSON string or build from parent/fields
   (define xpath-map
     (cond
+      [file-type-mode? #f]  ;; No XPath map for file type mode
+
       [xpath-map-str
        ;; Parse JSON object: {"name": "//h1", "price": "//span[@class='price']"}
        (with-handlers ([exn:fail? (lambda (e)
@@ -483,16 +560,21 @@ Command-line interface for the production web crawler with service fallbacks.
              (values (if (string? k) (string->symbol k) k) v))))]
 
       [else
-       (printf "Error: Must provide --fields, --xpath-map, or both --parent and --fields~n")
+       (printf "Error: Must provide --fields, --xpath-map, --file-type, --extension, or both --parent and --fields~n")
        (printf "~nUsage:~n")
        (printf "  ar-crawl extract <file> --fields '{\"title\": \"//h1\", \"body\": \"//p\"}'~n")
-       (printf "  ar-crawl extract <file> --xpath-map '{\"name\": \"//h1\", \"price\": \"//span\"}'~n")
+       (printf "  ar-crawl extract <file> --file-type pdf~n")
+       (printf "  ar-crawl extract <file> --extension pdf --extension docx~n")
        (printf "  ar-crawl extract <file> --parent \"//div[@class='product']\" --fields '{\"name\": \".//h2\", \"price\": \".//span\"}'~n")
        (exit 1)]))
 
   (when verbose
     (printf "Extracting from: ~a~n" input-file)
-    (printf "XPath map: ~a~n" xpath-map))
+    (when (not file-type-mode?)
+      (printf "XPath map: ~a~n" xpath-map))
+    (when file-type-mode?
+      (printf "File types: ~a~n" file-types)
+      (printf "Extensions: ~a~n" all-extensions)))
 
   ;; Resolve format
   (define effective-format
@@ -524,8 +606,12 @@ Command-line interface for the production web crawler with service fallbacks.
   ;; Extract from each item
   (define results
     (cond
+      ;; File type filtering mode
+      [file-type-mode?
+       (extract-files-from-items items all-extensions)]
+
       ;; Item extraction with parent + fields
-      [(hash-ref xpath-map 'parent #f)
+      [(and xpath-map (hash-ref xpath-map 'parent #f))
        (define parent (hash-ref xpath-map 'parent))
        (define fields (hash-ref xpath-map 'fields (hash)))
        (for/fold ([all-items '()])
@@ -1264,6 +1350,11 @@ Command-line interface for the production web crawler with service fallbacks.
     (extract-resolve-urls-param #t)]
    [("-v" "--verbose") "Show detailed progress"
     (verbose-mode #t)]
+   #:multi
+   [("--file-type") type "File type to extract (pdf, image, video, audio, archive, etc.)"
+    (extract-file-types-param (cons type (extract-file-types-param)))]
+   [("--extension") ext "File extension to extract (can be repeated)"
+    (extract-extensions-param (cons ext (extract-extensions-param)))]
    #:args remaining
    remaining))
 
@@ -1539,6 +1630,8 @@ Command-line interface for the production web crawler with service fallbacks.
                      #:xpath (extract-xpath-param)
                      #:parent (extract-parent-param)
                      #:fields (extract-fields-param)
+                     #:file-types (extract-file-types-param)
+                     #:extensions (extract-extensions-param)
                      #:output (output-file-param)
                      #:format (output-format-param)
                      #:resolve-urls (extract-resolve-urls-param)
@@ -1941,16 +2034,24 @@ Command-line interface for the production web crawler with service fallbacks.
 
   (printf "USAGE~n")
   (printf "  ar-crawl extract <file> --fields '<json>'~n")
-  (printf "  ar-crawl extract <file> --parent '<xpath>' --fields '<json>'~n~n")
+  (printf "  ar-crawl extract <file> --parent '<xpath>' --fields '<json>'~n")
+  (printf "  ar-crawl extract <file> --file-type <type>~n")
+  (printf "  ar-crawl extract <file> --extension <ext>~n~n")
 
   (printf "OPTIONS~n")
   (printf "  --fields <json>          JSON object mapping field names to XPaths~n")
   (printf "  --xpath-map <json>       Alias for --fields~n")
   (printf "  --parent <xpath>         Parent container XPath for repeating items~n")
+  (printf "  --file-type <type>       Extract files by type (repeatable)~n")
+  (printf "  --extension <ext>        Extract files by extension (repeatable)~n")
   (printf "  -o, --output <file>      Output file (stdout if not specified)~n")
   (printf "  -f, --format <fmt>       Output format: json (default), csv, sqlite~n")
   (printf "  --resolve-urls           Resolve relative URLs to absolute URLs~n")
   (printf "  -v, --verbose            Show detailed progress~n~n")
+
+  (printf "FILE TYPES~n")
+  (printf "  pdf, image, video, audio, archive, document, spreadsheet,~n")
+  (printf "  presentation, code~n~n")
 
   (printf "EXTRACTION MODES~n~n")
 
@@ -1975,6 +2076,18 @@ Command-line interface for the production web crawler with service fallbacks.
   (displayln "       }'")
   (newline)
 
+  (printf "  3. File Type Filtering (--file-type, --extension)~n")
+  (printf "     Extract downloadable files by type or extension.~n~n")
+  (printf "     Example: Extract all PDFs~n")
+  (displayln "     ar-crawl extract page.json --file-type pdf --resolve-urls")
+  (newline)
+  (printf "     Example: Extract multiple types~n")
+  (displayln "     ar-crawl extract page.json --file-type pdf --file-type image")
+  (newline)
+  (printf "     Example: Custom extensions~n")
+  (displayln "     ar-crawl extract page.json --extension docx --extension xlsx")
+  (newline)
+
   (printf "XPATH TIPS~n")
   (printf "  //tag                    Select all <tag> elements~n")
   (printf "  //tag[@class='x']        Select by class attribute~n")
@@ -1995,6 +2108,10 @@ Command-line interface for the production web crawler with service fallbacks.
   (printf "  # Extract all links and images~n")
   (displayln "  ar-crawl extract page.json \\")
   (displayln "    --xpath-map '{\"links\": \"//a/@href\", \"images\": \"//img/@src\"}'")
+  (newline)
+
+  (printf "  # Extract all PDFs for download~n")
+  (displayln "  ar-crawl extract page.json --file-type pdf --resolve-urls -o pdfs.json")
   (newline))
 
 ;; @function{show-sample-help}
@@ -2098,6 +2215,8 @@ Command-line interface for the production web crawler with service fallbacks.
 (define extract-parent-param (make-parameter #f))
 (define extract-fields-param (make-parameter #f))
 (define extract-resolve-urls-param (make-parameter #f))
+(define extract-file-types-param (make-parameter '()))
+(define extract-extensions-param (make-parameter '()))
 
 ;; Sample command parameters
 (define sample-index-param (make-parameter 0))

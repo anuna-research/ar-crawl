@@ -2,7 +2,7 @@
 
 ## Status
 - [x] Proposed
-- [ ] Implemented
+- [x] Implemented
 
 ## User Perspective
 **As a file-downloader user**, I want a simple way to extract all files of a specific type (PDFs, images, videos, archives) without having to write complex XPath expressions.
@@ -201,3 +201,92 @@ ar-crawl crawl-site https://site.com \
   --resolve-urls \
   -o pdfs.json
 ```
+
+## Implementation
+
+Added `--file-type` and `--extension` flags to the `extract` command for simple file filtering without XPath knowledge.
+
+### Changes Made
+
+**File**: `src/cli.rkt`
+
+1. **File Type Helpers** (lines 386-446):
+   - `file-type->extensions` - Maps preset names to extension lists
+   - `extract-extension-from-url` - Extracts extension from URL (handles query params, fragments)
+   - `url-has-extension?` - Checks if URL matches extensions (case-insensitive)
+   - `extract-files-from-items` - Extracts links matching extensions from HTML
+
+2. **File Type Presets**:
+   - `pdf` → .pdf
+   - `image` → .jpg, .jpeg, .png, .gif, .svg, .webp, .bmp, .ico
+   - `video` → .mp4, .webm, .mov, .avi, .mkv, .flv, .wmv
+   - `audio` → .mp3, .wav, .ogg, .flac, .aac, .m4a
+   - `archive` → .zip, .tar, .tar.gz, .tgz, .rar, .7z, .bz2
+   - `document` → .pdf, .doc, .docx, .txt, .rtf, .odt
+   - `spreadsheet` → .xls, .xlsx, .csv, .ods
+   - `presentation` → .ppt, .pptx, .odp
+   - `code` → .js, .py, .rb, .java, .cpp, .c, .go, .rs, .sh
+
+3. **Command-Line Flags** (lines 1354-1357):
+   - `--file-type <type>` - Can be repeated for multiple types
+   - `--extension <ext>` - Can be repeated for custom extensions
+
+4. **Integration** (lines 609-611):
+   - File type mode runs before XPath extraction
+   - Returns structured data: url, link_text, extension, source_url
+   - Works seamlessly with `--resolve-urls`
+
+### Features Handled
+
+- ✅ **Case-insensitive matching**: Handles `.PDF`, `.Pdf`, `.pdf`
+- ✅ **Query parameters**: Matches `file.pdf?download=true`
+- ✅ **Fragment identifiers**: Matches `file.pdf#page=2`
+- ✅ **Multiple types**: `--file-type pdf --file-type image`
+- ✅ **Custom extensions**: `--extension docx --extension xlsx`
+- ✅ **URL resolution**: Works with `--resolve-urls` flag
+
+### Usage Examples
+
+```bash
+# Extract all PDFs
+ar-crawl extract page.json --file-type pdf -o pdfs.json
+
+# Extract multiple types
+ar-crawl extract page.json --file-type pdf --file-type image --resolve-urls
+
+# Custom extensions
+ar-crawl extract page.json --extension docx --extension xlsx
+
+# Download workflow
+ar-crawl crawl https://research.edu/papers -o papers.json
+ar-crawl extract papers.json --file-type pdf --resolve-urls -o pdf-list.json
+cat pdf-list.json | jq -r '.data[].url' | xargs wget
+```
+
+### Output Format
+
+```json
+{
+  "data": [
+    {
+      "url": "/files/annual-report-2024.pdf",
+      "link_text": "Annual Report 2024",
+      "extension": "pdf",
+      "source_url": "https://example.com/downloads"
+    }
+  ],
+  "metadata": {
+    "record_count": 1,
+    "source": "page.json"
+  }
+}
+```
+
+### Testing
+
+All existing tests pass. Verified with:
+- Case-insensitive matching (.pdf, .PDF)
+- Query parameters in URLs
+- Multiple file types
+- Custom extensions
+- URL resolution integration
