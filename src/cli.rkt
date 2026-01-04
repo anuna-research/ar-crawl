@@ -200,6 +200,7 @@ Command-line interface for the production web crawler with service fallbacks.
                   #:format [format 'json]
                   #:services [services '()]
                   #:verbose [verbose #f]
+                  #:dry-run [dry-run #f]
                   #:wait [wait #f]
                   #:xpath [xpath #f]
                   #:scroll [scroll #f]
@@ -239,15 +240,33 @@ Command-line interface for the production web crawler with service fallbacks.
   (define config-services (get-config-value global-config '(crawler services) '("direct")))
   (define effective-services
     (map (lambda (s) (if (symbol? s) s (string->symbol s))) config-services))
-  (ensure-playwright-if-needed effective-services #:verbose verbose)
-
-  (define crawler (create-crawler-from-config))
 
   ;; Resolve format
   (define effective-format
     (or format
         (and output-file (detect-format-from-extension output-file))
         'json))
+
+  ;; Dry-run mode: show what would be done and exit
+  (when dry-run
+    (printf "~n~a~n~n" (color-bold "=== Dry Run: crawl ==="))
+    (printf "URL:             ~a~n" url)
+    (printf "Services:        ~a~n" effective-services)
+    (printf "Output file:     ~a~n" (or output-file "(stdout)"))
+    (printf "Output format:   ~a~n" effective-format)
+    (when xpath
+      (printf "XPath filter:    ~a~n" xpath))
+    (when scroll
+      (printf "Scroll:          enabled (~a iterations, ~a ms delay)~n" scroll-count scroll-delay))
+    (when click-selector
+      (printf "Click selector:  ~a (count: ~a)~n" click-selector click-count))
+    (printf "PW delay:        ~a ms~n" delay)
+    (printf "~nNo crawling will be performed.~n")
+    (exit EXIT-SUCCESS))
+
+  (ensure-playwright-if-needed effective-services #:verbose verbose)
+
+  (define crawler (create-crawler-from-config))
 
   (if verbose
       (begin
@@ -289,6 +308,7 @@ Command-line interface for the production web crawler with service fallbacks.
                        #:format [format 'json]
                        #:services [services '()]
                        #:verbose [verbose #f]
+                       #:dry-run [dry-run #f]
                        #:max-pages [max-pages 50]
                        #:max-depth [max-depth 3]
                        #:url-pattern [url-pattern ".*"]
@@ -318,6 +338,23 @@ Command-line interface for the production web crawler with service fallbacks.
     (or format
         (and output-file (detect-format-from-extension output-file))
         'json))
+
+  ;; Dry-run mode: show what would be done and exit
+  (when dry-run
+    (printf "~n~a~n~n" (color-bold "=== Dry Run: crawl-site ==="))
+    (printf "Seed URL:        ~a~n" url)
+    (printf "Services:        ~a~n" effective-services)
+    (printf "Max pages:       ~a~n" max-pages)
+    (printf "Max depth:       ~a~n" max-depth)
+    (printf "URL pattern:     ~a~n" url-pattern)
+    (printf "Same domain:     ~a~n" same-domain)
+    (printf "Crawl delay:     ~a ms~n" crawl-delay)
+    (printf "Output file:     ~a~n" (or output-file "(stdout)"))
+    (printf "Output format:   ~a~n" effective-format)
+    (when xpath
+      (printf "XPath filter:    ~a~n" xpath))
+    (printf "~nNo crawling will be performed.~n")
+    (exit EXIT-SUCCESS))
 
   ;; Create site crawl configuration
   (define site-config 
@@ -691,14 +728,8 @@ Command-line interface for the production web crawler with service fallbacks.
   ;; Load input file - detect SQLite by extension
   (define items
     (with-handlers ([exn:fail? (lambda (e)
-                                 (let* ([error-type (classify-error e)]
-                                        [details (file-error-details e input-file)]
-                                        [file-str (if (path? input-file)
-                                                     (path->string input-file)
-                                                     input-file)])
-                                   (report-error-and-exit error-type
-                                                         (string-append "Failed to load " file-str)
-                                                         details)))])
+                                 (eprintf "~a: failed to load file: ~a~n" (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
       (let ([input-str (if (path? input-file) (path->string input-file) input-file)])
         (if (string-suffix? input-str ".db")
             ;; Load from SQLite database
@@ -821,14 +852,8 @@ Command-line interface for the production web crawler with service fallbacks.
   ;; Load input file - detect SQLite by extension
   (define items
     (with-handlers ([exn:fail? (lambda (e)
-                                 (let* ([error-type (classify-error e)]
-                                        [details (file-error-details e input-file)]
-                                        [file-str (if (path? input-file)
-                                                     (path->string input-file)
-                                                     input-file)])
-                                   (report-error-and-exit error-type
-                                                         (string-append "Failed to load " file-str)
-                                                         details)))])
+                                 (eprintf "~a: failed to load file: ~a~n" (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
       (let ([input-str (if (path? input-file) (path->string input-file) input-file)])
         (if (string-suffix? input-str ".db")
             ;; Load from SQLite database
@@ -841,13 +866,13 @@ Command-line interface for the production web crawler with service fallbacks.
               (hash-ref input-data 'data '()))))))
 
   (when (empty? items)
-    (printf "No items found in ~a~n" input-file)
-    (exit 1))
+    (eprintf "~a: no items found in ~a~n" (color-error "error") input-file)
+    (exit EXIT-ERROR))
 
   (when (>= index (length items))
-    (printf "Index ~a out of range. File has ~a items (0-~a)~n"
-            index (length items) (- (length items) 1))
-    (exit 1))
+    (eprintf "~a: index ~a out of range (file has ~a items, valid range: 0-~a)~n"
+             (color-error "error") index (length items) (- (length items) 1))
+    (exit EXIT-ERROR))
 
   (define item (list-ref items index))
   (define url (hash-ref item 'url ""))
@@ -886,8 +911,8 @@ Command-line interface for the production web crawler with service fallbacks.
   ;; Load and analyze stats
   (define stats
     (with-handlers ([exn:fail? (lambda (e)
-                                 (printf "Error loading database: ~a~n" (exn-message e))
-                                 (exit 1))])
+                                 (eprintf "~a: failed to load database: ~a~n" (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
       (analyze-crawl-stats db-file)))
 
   (if (eq? format 'json)
@@ -948,7 +973,7 @@ Command-line interface for the production web crawler with service fallbacks.
   (define response
     (with-handlers ([exn:fail? (lambda (e)
                                   (unless (eq? output-format 'json)
-                                    (printf "Probe failed: ~a~n" (exn-message e)))
+                                    (eprintf "~a: probe failed: ~a~n" (color-error "error") (exn-message e)))
                                   #f)])
       (define req-data (jsexpr->string (hash 'url url)))
       (define port (post-pure-port
@@ -962,8 +987,8 @@ Command-line interface for the production web crawler with service fallbacks.
   (when (not response)
     (if (eq? output-format 'json)
         (displayln (jsexpr->string (hash 'error "Probe failed" 'details "Check playwright service or URL") #:encode 'control))
-        (printf "Failed to probe URL. Is the playwright service running?~n"))
-    (exit 1))
+        (eprintf "~a: failed to probe URL (check if playwright service is running)~n" (color-error "error")))
+    (exit EXIT-ERROR))
 
   ;; Extract key metrics (Racket json library uses symbols for keys)
   (define timing (hash-ref response 'timing (hash)))
@@ -1573,6 +1598,8 @@ Command-line interface for the production web crawler with service fallbacks.
    #:once-each
    [("-v" "--verbose") "Enable verbose output"
     (verbose-mode #t)]
+   [("-n" "--dry-run") "Show what would be done without crawling"
+    (dry-run-mode #t)]
    [("-c" "--config") config-file "Path to configuration file"
     (config-file-path config-file)]
    [("-o" "--output") file "Save results to file"
@@ -1608,6 +1635,8 @@ Command-line interface for the production web crawler with service fallbacks.
    #:once-each
    [("-v" "--verbose") "Enable verbose output"
     (verbose-mode #t)]
+   [("-n" "--dry-run") "Show what would be done without crawling"
+    (dry-run-mode #t)]
    [("-c" "--config") config-file "Path to configuration file"
     (config-file-path config-file)]
    [("-o" "--output") file "Save results to file"
@@ -1679,13 +1708,26 @@ Command-line interface for the production web crawler with service fallbacks.
 (define (main)
   (define args (vector->list (current-command-line-arguments)))
 
+  ;; Initialize color mode based on environment
+  (init-color-mode!)
+
+  ;; Handle --no-color and --color flags early (before other parsing)
+  (when (member "--no-color" args)
+    (color-enabled #f))
+  (when (member "--color" args)
+    (force-color #t)
+    (color-enabled #t))
+
   ;; Handle --help and --version at any position
   (when (or (member "--help" args) (member "-h" args))
     (show-main-help)
-    (exit 0))
+    (exit EXIT-SUCCESS))
   (when (member "--version" args)
     (show-version)
-    (exit 0))
+    (exit EXIT-SUCCESS))
+
+  ;; Filter out color flags before further parsing
+  (set! args (filter (lambda (a) (not (member a '("--no-color" "--color")))) args))
 
   ;; Find the command (first non-flag argument)
   (define-values (pre-cmd-args command post-cmd-args) (split-args-at-command args))
@@ -1698,6 +1740,10 @@ Command-line interface for the production web crawler with service fallbacks.
      #:once-each
      [("-v" "--verbose") "Enable verbose output"
       (verbose-mode #t)]
+     [("-q" "--quiet") "Suppress non-essential output"
+      (quiet-mode #t)]
+     [("-n" "--dry-run") "Show what would be done without doing it"
+      (dry-run-mode #t)]
      [("-c" "--config") config-file "Path to configuration file"
       (config-file-path config-file)]
      #:multi
@@ -1705,8 +1751,9 @@ Command-line interface for the production web crawler with service fallbacks.
       (selected-services (cons (string->symbol service) (selected-services)))]
      #:args remaining
      (when (not (empty? remaining))
-       (printf "Error: Unexpected arguments before command: ~a~n" remaining)
-       (exit 1))))
+       (eprintf "~a: unexpected arguments before command: ~a~n"
+                (color-error "error") remaining)
+       (exit EXIT-USAGE))))
 
   (cond
     [(not command)
@@ -1718,22 +1765,21 @@ Command-line interface for the production web crawler with service fallbacks.
      (case cmd-sym
        [(crawl)
         (when (empty? post-cmd-args)
-          (report-error-and-exit 'missing-argument
-                                "URL required for crawl command"
-                                (hash 'suggestions (list "Provide a URL to crawl"
-                                                       "Example: ar-crawl crawl https://example.com"
-                                                       "Run 'ar-crawl help crawl' for more information"))))
+          (eprintf "~a: URL required for crawl command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl crawl <url> [options]~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help crawl"))
+          (exit EXIT-USAGE))
         (define url (car post-cmd-args))
-        (let-values ([(valid? error-info) (validate-url-or-error url)])
-          (unless valid?
-            (report-error-and-exit (hash-ref error-info 'error_type)
-                                  (hash-ref error-info 'message)
-                                  error-info)))
+        (when (string-prefix? url "-")
+           (eprintf "~a: invalid URL '~a' (looks like a flag)~n" (color-error "error") url)
+           (eprintf "~nURLs must not start with '-'. Did you forget to specify a URL?~n")
+           (exit EXIT-USAGE))
         (parse-crawl-args (cdr post-cmd-args))
         (cmd-crawl url
                    #:config (config-file-path)
                    #:services (selected-services)
                    #:verbose (verbose-mode)
+                   #:dry-run (dry-run-mode)
                    #:output (output-file-param)
                    #:format (output-format-param)
                    #:xpath (xpath-filter-param)
@@ -1746,22 +1792,21 @@ Command-line interface for the production web crawler with service fallbacks.
 
        [(crawl-site)
         (when (empty? post-cmd-args)
-          (report-error-and-exit 'missing-argument
-                                "URL required for crawl-site command"
-                                (hash 'suggestions (list "Provide a URL to crawl"
-                                                       "Example: ar-crawl crawl-site https://example.com"
-                                                       "Run 'ar-crawl help crawl-site' for more information"))))
+          (eprintf "~a: URL required for crawl-site command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl crawl-site <url> [options]~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help crawl-site"))
+          (exit EXIT-USAGE))
         (define url (car post-cmd-args))
-        (let-values ([(valid? error-info) (validate-url-or-error url)])
-          (unless valid?
-            (report-error-and-exit (hash-ref error-info 'error_type)
-                                  (hash-ref error-info 'message)
-                                  error-info)))
+        (when (string-prefix? url "-")
+           (eprintf "~a: invalid URL '~a' (looks like a flag)~n" (color-error "error") url)
+           (eprintf "~nURLs must not start with '-'. Did you forget to specify a URL?~n")
+           (exit EXIT-USAGE))
         (parse-crawl-site-args (cdr post-cmd-args))
         (cmd-crawl-site url
                         #:config (config-file-path)
                         #:services (selected-services)
                         #:verbose (verbose-mode)
+                        #:dry-run (dry-run-mode)
                         #:max-pages (max-pages)
                         #:max-depth (max-depth)
                         #:url-pattern (url-pattern)
@@ -1783,11 +1828,11 @@ Command-line interface for the production web crawler with service fallbacks.
 
        [(config)
         (when (empty? post-cmd-args)
-          (printf "Error: Subcommand required for config command~n~n")
-          (printf "Usage: ar-crawl config <subcommand>~n")
-          (printf "Subcommands: init, show, validate~n")
-          (printf "Run 'ar-crawl help config' for more information.~n")
-          (exit 1))
+          (eprintf "~a: subcommand required for config command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl config <subcommand>~n")
+          (eprintf "Subcommands: init, show, validate~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help config"))
+          (exit EXIT-USAGE))
         (cmd-config (string->symbol (car post-cmd-args)))]
 
        [(services)
@@ -1800,12 +1845,12 @@ Command-line interface for the production web crawler with service fallbacks.
 
        [(extract)
         (when (empty? post-cmd-args)
-          (printf "Error: Input file required for extract command~n~n")
-          (printf "Usage: ar-crawl extract <file> [options]~n")
-          (printf "       ar-crawl extract <file> --xpath-map '{...}'~n")
-          (printf "       ar-crawl extract <file> --parent \"//div\" --fields '{...}'~n")
-          (printf "Run 'ar-crawl help extract' for more information.~n")
-          (exit 1))
+          (eprintf "~a: input file required for extract command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl extract <file> [options]~n")
+          (eprintf "       ar-crawl extract <file> --xpath-map '{...}'~n")
+          (eprintf "       ar-crawl extract <file> --parent \"//div\" --fields '{...}'~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help extract"))
+          (exit EXIT-USAGE))
         (define input-file (car post-cmd-args))
         (parse-extract-args (cdr post-cmd-args))
         (cmd-extract input-file
@@ -1825,9 +1870,10 @@ Command-line interface for the production web crawler with service fallbacks.
 
        [(sample)
         (when (empty? post-cmd-args)
-          (printf "Error: Input file required for sample command~n~n")
-          (printf "Usage: ar-crawl sample <file> [--index N] [--length N]~n")
-          (exit 1))
+          (eprintf "~a: input file required for sample command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl sample <file> [--index N] [--length N]~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help sample"))
+          (exit EXIT-USAGE))
         (define input-file (car post-cmd-args))
         (parse-sample-args (cdr post-cmd-args))
         (cmd-sample input-file
@@ -1836,23 +1882,24 @@ Command-line interface for the production web crawler with service fallbacks.
 
        [(stats)
         (when (empty? post-cmd-args)
-          (printf "Error: Database file required for stats command~n~n")
-          (printf "Usage: ar-crawl stats <file.db> [options]~n")
-          (exit 1))
+          (eprintf "~a: database file required for stats command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl stats <file.db> [options]~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help stats"))
+          (exit EXIT-USAGE))
         (define db-file (car post-cmd-args))
         (parse-stats-args (cdr post-cmd-args))
         (with-handlers ([exn:fail? (lambda (e)
-                                     (eprintf "Error analyzing stats: ~a~n" (exn-message e))
-                                     (exit 1))])
+                                     (eprintf "~a: ~a~n" (color-error "error") (exn-message e))
+                                     (exit EXIT-ERROR))])
            (cmd-stats db-file #:verbose (verbose-mode)
                       #:format (output-format-param)))]
 
        [(probe)
         (when (empty? post-cmd-args)
-          (printf "Error: URL required for probe command~n~n")
-          (printf "Usage: ar-crawl probe <url> [options]~n")
-          (printf "Run 'ar-crawl help probe' for more information.~n")
-          (exit 1))
+          (eprintf "~a: URL required for probe command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl probe <url> [options]~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help probe"))
+          (exit EXIT-USAGE))
         (define probe-target-url (car post-cmd-args))
         (parse-probe-args (cdr post-cmd-args))
         (with-playwright-cleanup
@@ -1870,13 +1917,39 @@ Command-line interface for the production web crawler with service fallbacks.
         (show-version)]
 
        [else
-        (printf "Unknown command: ~a~n~n" command)
-        (printf "Run 'ar-crawl help' for usage information.~n")])]))
+        (define suggestion (suggest-command command))
+        (eprintf "~a: unknown command '~a'~n" (color-error "error") command)
+        (when suggestion
+          (eprintf "~n    Did you mean '~a'?~n" (color-info suggestion)))
+        (eprintf "~nRun '~a' for usage information.~n"
+                 (color-dim "ar-crawl help"))
+        (exit EXIT-USAGE)])]))
 
 ;; Initialize global parameters
 (define verbose-mode (make-parameter #f))
+(define quiet-mode (make-parameter #f))
 (define config-file-path (make-parameter #f))
 (define selected-services (make-parameter '()))
+(define dry-run-mode (make-parameter #f))
+
+;; Color control parameters - follows clig.dev guidelines
+;; Colors disabled when: NO_COLOR set, TERM=dumb, --no-color, or not a TTY
+(define color-enabled (make-parameter #f))
+(define force-color (make-parameter #f))
+
+;; @function{should-use-color?}
+;; @description{Determine if color output should be used based on environment and flags}
+(define (should-use-color?)
+  (cond
+    [(force-color) #t]  ; --color flag overrides everything
+    [(getenv "NO_COLOR") #f]  ; NO_COLOR env var disables color
+    [(equal? (getenv "TERM") "dumb") #f]  ; dumb terminal
+    [(not (terminal-port? (current-output-port))) #f]  ; not a TTY
+    [else #t]))
+
+;; Initialize color based on environment
+(define (init-color-mode!)
+  (color-enabled (should-use-color?)))
 
 ;; Playwright-specific parameters
 (define pw-scroll (make-parameter #f))
@@ -1888,6 +1961,118 @@ Command-line interface for the production web crawler with service fallbacks.
 
 ;; Version info
 (define AR-CRAWL-VERSION "1.0.0")
+
+;; Exit codes - standardized per clig.dev
+(define EXIT-SUCCESS 0)
+(define EXIT-ERROR 1)
+(define EXIT-USAGE 2)
+
+;; ANSI color codes
+(define ANSI-RESET "\033[0m")
+(define ANSI-RED "\033[31m")
+(define ANSI-GREEN "\033[32m")
+(define ANSI-YELLOW "\033[33m")
+(define ANSI-BLUE "\033[34m")
+(define ANSI-BOLD "\033[1m")
+(define ANSI-DIM "\033[2m")
+
+;; @function{colorize}
+;; @description{Apply ANSI color code if colors are enabled}
+(define (colorize text color-code)
+  (if (color-enabled)
+      (string-append color-code text ANSI-RESET)
+      text))
+
+;; @function{color-error}
+;; @description{Format text as error (red)}
+(define (color-error text)
+  (colorize text ANSI-RED))
+
+;; @function{color-success}
+;; @description{Format text as success (green)}
+(define (color-success text)
+  (colorize text ANSI-GREEN))
+
+;; @function{color-warning}
+;; @description{Format text as warning (yellow)}
+(define (color-warning text)
+  (colorize text ANSI-YELLOW))
+
+;; @function{color-info}
+;; @description{Format text as info (blue)}
+(define (color-info text)
+  (colorize text ANSI-BLUE))
+
+;; @function{color-bold}
+;; @description{Format text as bold}
+(define (color-bold text)
+  (colorize text ANSI-BOLD))
+
+;; @function{color-dim}
+;; @description{Format text as dim}
+(define (color-dim text)
+  (colorize text ANSI-DIM))
+
+;; @function{msg}
+;; @description{Print message to stderr (for non-data output per clig.dev)}
+(define (msg fmt . args)
+  (unless (quiet-mode)
+    (apply eprintf (string-append fmt "~n") args)))
+
+;; @function{msg-verbose}
+;; @description{Print verbose message to stderr only if verbose mode is on}
+(define (msg-verbose fmt . args)
+  (when (verbose-mode)
+    (apply eprintf (string-append fmt "~n") args)))
+
+;; @function{die}
+;; @description{Print error message and exit with given code}
+(define (die code fmt . args)
+  (eprintf "~a: ~a~n" (color-error "error") (apply format fmt args))
+  (exit code))
+
+;; @function{die-usage}
+;; @description{Print usage error and exit}
+(define (die-usage fmt . args)
+  (apply die EXIT-USAGE fmt args))
+
+;; Known commands for typo suggestions
+(define KNOWN-COMMANDS
+  '("crawl" "crawl-site" "probe" "sample" "extract" "stats"
+    "health" "test" "config" "services" "monitor" "help" "version"))
+
+;; @function{levenshtein-distance}
+;; @description{Calculate edit distance between two strings for typo detection}
+(define (levenshtein-distance s1 s2)
+  (define len1 (string-length s1))
+  (define len2 (string-length s2))
+  (define dp (make-vector (add1 len1)))
+  (for ([i (in-range (add1 len1))])
+    (vector-set! dp i (make-vector (add1 len2) 0)))
+  (for ([i (in-range (add1 len1))])
+    (vector-set! (vector-ref dp i) 0 i))
+  (for ([j (in-range (add1 len2))])
+    (vector-set! (vector-ref dp 0) j j))
+  (for* ([i (in-range 1 (add1 len1))]
+         [j (in-range 1 (add1 len2))])
+    (define cost (if (char=? (string-ref s1 (sub1 i))
+                             (string-ref s2 (sub1 j))) 0 1))
+    (vector-set! (vector-ref dp i) j
+                 (min (add1 (vector-ref (vector-ref dp (sub1 i)) j))
+                      (add1 (vector-ref (vector-ref dp i) (sub1 j)))
+                      (+ cost (vector-ref (vector-ref dp (sub1 i)) (sub1 j))))))
+  (vector-ref (vector-ref dp len1) len2))
+
+;; @function{suggest-command}
+;; @description{Suggest similar commands for typo correction}
+(define (suggest-command input)
+  (define candidates
+    (filter (lambda (cmd)
+              (<= (levenshtein-distance input cmd) 2))
+            KNOWN-COMMANDS))
+  (if (empty? candidates)
+      #f
+      (argmin (lambda (cmd) (levenshtein-distance input cmd)) candidates)))
 
 ;; Help Documentation
 ;; ------------------
@@ -1929,7 +2114,11 @@ Command-line interface for the production web crawler with service fallbacks.
 
   (printf "GLOBAL OPTIONS~n")
   (printf "  -v, --verbose       Enable verbose output with detailed logging~n")
+  (printf "  -q, --quiet         Suppress non-essential output~n")
+  (printf "  -n, --dry-run       Show what would be done without doing it~n")
   (printf "  -c, --config FILE   Path to configuration file (auto-detected by default)~n")
+  (printf "      --no-color      Disable colored output~n")
+  (printf "      --color         Force colored output (even in pipes)~n")
   (printf "      --help          Show this help message (also: ar-crawl help)~n")
   (printf "      --version       Show version information~n~n")
 
@@ -1967,7 +2156,8 @@ Command-line interface for the production web crawler with service fallbacks.
   (printf "  -f, --format FMT    Output format: json (default), csv, markdown, sqlite~n")
   (printf "      --xpath EXPR    XPath expression to filter HTML content~n")
   (printf "  -c, --config FILE   Configuration file path~n")
-  (printf "  -v, --verbose       Show detailed progress and debugging info~n~n")
+  (printf "  -v, --verbose       Show detailed progress and debugging info~n")
+  (printf "  -n, --dry-run       Show what would be done without crawling~n~n")
 
   (printf "EXAMPLES~n")
   (printf "  # Basic crawl~n")
@@ -2014,7 +2204,8 @@ Command-line interface for the production web crawler with service fallbacks.
   (printf "  -f, --format FMT       Output format: json, csv, markdown, sqlite~n")
   (printf "      --xpath EXPR       XPath expression to filter content~n")
   (printf "  -c, --config FILE      Configuration file path~n")
-  (printf "  -v, --verbose          Show detailed progress~n~n")
+  (printf "  -v, --verbose          Show detailed progress~n")
+  (printf "  -n, --dry-run          Show what would be done without crawling~n~n")
 
   (printf "EXAMPLES~n")
   (printf "  # Crawl a site with default settings~n")
