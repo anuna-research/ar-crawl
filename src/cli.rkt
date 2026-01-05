@@ -5,7 +5,7 @@
 @author{Anuna Research}
 @date{2025-01-10}
 
-Command-line interface for the production web crawler with service fallbacks.
+Command-line interface for the web crawler for agents with service fallbacks.
 |#
 
 (require racket/cmdline
@@ -2081,14 +2081,14 @@ Command-line interface for the production web crawler with service fallbacks.
 ;; @description{Display version information}
 (define (show-version)
   (printf "ar-crawl ~a~n" AR-CRAWL-VERSION)
-  (printf "Production web crawler with service fallbacks~n")
+  (printf "Web crawler for agents with service fallbacks~n")
   (printf "Copyright (c) 2025 Anuna Research~n"))
 
 ;; @function{show-main-help}
 ;; @description{Display main help message with overview of all commands}
 (define (show-main-help)
   (printf "~n")
-  (printf "AR-CRAWL - Production Web Crawler~n")
+  (printf "AR-CRAWL - Web Crawler for Agents~n")
   (printf "==================================~n~n")
   (printf "A powerful web crawler with automatic service fallbacks, JavaScript rendering,~n")
   (printf "and multiple output formats.~n~n")

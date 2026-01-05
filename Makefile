@@ -3,7 +3,7 @@
 
 # Default target
 help:
-	@echo "AR-Crawl Production Web Crawler"
+	@echo "AR-Crawl - Web Crawler for Agents"
 	@echo "================================"
 	@echo ""
 	@echo "Available targets:"

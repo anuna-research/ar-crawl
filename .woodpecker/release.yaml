@@ -421,7 +421,7 @@ steps:
         cat > release-notes.md << EOF
         ## Release ${CI_COMMIT_TAG}
 
-        AR-Crawl production web crawler with service fallbacks.
+        AR-Crawl web crawler for agents with service fallbacks.
 
         ### Quick Install
 
