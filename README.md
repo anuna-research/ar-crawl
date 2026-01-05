@@ -302,11 +302,15 @@ make run ARGS='test --verbose'
 ### Command Options
 
 #### Global Options
-- **`--config <file>`** - Specify configuration file
+- **`--config, -c <file>`** - Specify configuration file
 - **`--verbose, -v`** - Enable verbose output and progress tracking
+- **`--quiet, -q`** - Suppress non-essential output
+- **`--dry-run, -n`** - Show what would be done without doing it
 - **`--output, -o <file>`** - Save results to file
 - **`--format <type>`** - Output format (json, csv, markdown, sqlite)
 - **`--service, -s <name>`** - Use specific service (can be repeated)
+- **`--no-color`** - Disable colored output (also respects `NO_COLOR` env var)
+- **`--color`** - Force colored output even when not a TTY
 
 #### Site Crawling Options
 - **`--max-pages <num>`** - Maximum pages to crawl (default: 50)
@@ -1142,6 +1146,18 @@ make test
 - Use premium proxy services
 - Spread requests across multiple services
 
+### Exit Codes
+
+AR-Crawl uses standardized exit codes following [clig.dev](https://clig.dev/) guidelines:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | Error (runtime failure, network error, etc.) |
+| 2 | Usage error (invalid arguments, missing required options) |
+
+This makes AR-Crawl easy to use in scripts and pipelines.
+
 ### Debug Mode
 
 Enable verbose logging:
@@ -1152,6 +1168,19 @@ ar-crawl crawl https://example.com --verbose
 Check configuration:
 ```bash
 ar-crawl config show --file config/default.json
+```
+
+### Typo Suggestions
+
+If you mistype a command, AR-Crawl will suggest the closest match:
+
+```bash
+$ ar-crawl crawll https://example.com
+error: unknown command 'crawll'
+
+    Did you mean 'crawl'?
+
+Run 'ar-crawl help' for usage information.
 ```
 
 ### Getting Help
