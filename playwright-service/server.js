@@ -1612,8 +1612,21 @@ const server = http.createServer(async (req, res) => {
              const session = sessions.get(sessionId);
              if (!session) throw new Error('Session not found');
 
+             // Auto-generate title from date and first URL
+             const date = new Date(session.createdAt);
+             const dateStr = date.toISOString().split('T')[0]; // YYYY-MM-DD
+             const timeStr = date.toTimeString().slice(0, 5).replace(':', ''); // HHMM
+             const firstNav = session.steps.find(s => s.type === 'navigate');
+             let domain = '';
+             if (firstNav && firstNav.url) {
+               try {
+                 domain = ' - ' + new URL(firstNav.url).hostname.replace('www.', '');
+               } catch {}
+             }
+             const title = `Session ${dateStr} ${timeStr}${domain}`;
+
              const recording = {
-                 title: 'LLM Agent Session',
+                 title,
                  steps: session.steps
              };
 
