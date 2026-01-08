@@ -164,6 +164,215 @@ async function probePage(options) {
   }
 }
 
+async function replayRecording(options) {
+  const {
+    recording,
+    timeout = 30000,
+    viewport = { width: 1920, height: 1080 },
+    userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    extractLinks = true
+  } = options;
+
+  const startTime = Date.now();
+  const b = await initBrowser();
+  const context = await b.newContext({ viewport, userAgent });
+  const page = await context.newPage();
+
+  const stepResults = [];
+
+  try {
+    for (let i = 0; i < recording.steps.length; i++) {
+      const step = recording.steps[i];
+      const stepStart = Date.now();
+      let stepResult = { index: i, type: step.type, success: true };
+
+      try {
+        switch (step.type) {
+          case 'setViewport':
+            await page.setViewportSize({
+              width: step.width,
+              height: step.height
+            });
+            break;
+
+          case 'navigate':
+            await page.goto(step.url, { waitUntil: 'networkidle', timeout });
+            stepResult.url = step.url;
+            break;
+
+          case 'click':
+            const clickSelector = resolveSelector(step.selectors);
+            await page.click(clickSelector, {
+              button: step.button || 'left',
+              clickCount: step.clickCount || 1,
+              timeout
+            });
+            stepResult.selector = clickSelector;
+            break;
+
+          case 'doubleClick':
+            const dblClickSelector = resolveSelector(step.selectors);
+            await page.dblclick(dblClickSelector, { timeout });
+            stepResult.selector = dblClickSelector;
+            break;
+
+          case 'change':
+            const changeSelector = resolveSelector(step.selectors);
+            await page.fill(changeSelector, step.value, { timeout });
+            stepResult.selector = changeSelector;
+            stepResult.value = step.value;
+            break;
+
+          case 'keyDown':
+            await page.keyboard.down(step.key);
+            stepResult.key = step.key;
+            break;
+
+          case 'keyUp':
+            await page.keyboard.up(step.key);
+            stepResult.key = step.key;
+            break;
+
+          case 'scroll':
+            if (step.selectors) {
+              const scrollSelector = resolveSelector(step.selectors);
+              await page.evaluate(({ selector, x, y }) => {
+                const el = document.querySelector(selector);
+                if (el) el.scrollTo(x || 0, y || 0);
+              }, { selector: scrollSelector, x: step.x, y: step.y });
+            } else {
+              await page.evaluate(({ x, y }) => {
+                window.scrollTo(x || 0, y || 0);
+              }, { x: step.x, y: step.y });
+            }
+            break;
+
+          case 'hover':
+            const hoverSelector = resolveSelector(step.selectors);
+            await page.hover(hoverSelector, { timeout });
+            stepResult.selector = hoverSelector;
+            break;
+
+          case 'waitForElement':
+            const waitSelector = resolveSelector(step.selectors);
+            await page.waitForSelector(waitSelector, {
+              state: step.visible === false ? 'hidden' : 'visible',
+              timeout
+            });
+            stepResult.selector = waitSelector;
+            break;
+
+          case 'waitForExpression':
+            await page.waitForFunction(step.expression, { timeout });
+            stepResult.expression = step.expression;
+            break;
+
+          case 'close':
+            // Skip close step - we handle cleanup ourselves
+            break;
+
+          default:
+            log(`Unknown step type: ${step.type}`);
+            stepResult.warning = `Unknown step type: ${step.type}`;
+        }
+      } catch (stepError) {
+        stepResult.success = false;
+        stepResult.error = stepError.message;
+        log(`Step ${i} (${step.type}) failed: ${stepError.message}`);
+        // Continue to next step unless it's critical
+        if (step.type === 'navigate') {
+          throw stepError; // Navigation failures are fatal
+        }
+      }
+
+      stepResult.duration = Date.now() - stepStart;
+      stepResults.push(stepResult);
+    }
+
+    // Get final page content
+    const content = await page.content();
+    const title = await page.title();
+    const finalUrl = page.url();
+
+    // Extract links if requested
+    let links = [];
+    if (extractLinks) {
+      links = await page.evaluate(() => {
+        const anchors = document.querySelectorAll('a[href]');
+        const hrefs = [];
+        anchors.forEach(a => {
+          const href = a.href;
+          if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
+            hrefs.push(href);
+          }
+        });
+        return [...new Set(hrefs)];
+      });
+    }
+
+    return {
+      content,
+      url: finalUrl,
+      title,
+      links,
+      recording: {
+        title: recording.title || 'untitled',
+        stepsExecuted: stepResults.length,
+        stepResults
+      },
+      metadata: {
+        method: 'playwright-replay',
+        viewport,
+        contentLength: content.length,
+        totalTime: Date.now() - startTime
+      }
+    };
+  } finally {
+    await context.close();
+  }
+}
+
+// Resolve Chrome DevTools Recorder selector format to Playwright selector
+function resolveSelector(selectors) {
+  if (!selectors || selectors.length === 0) {
+    throw new Error('No selectors provided');
+  }
+
+  // Chrome DevTools Recorder provides an array of selectors in order of preference
+  // Try each until one works; for simplicity, take the first CSS or XPath selector
+  for (const selector of selectors) {
+    if (Array.isArray(selector)) {
+      // Nested array - use first element
+      return selector[0];
+    }
+    if (typeof selector === 'string') {
+      // ARIA selectors start with 'aria/'
+      if (selector.startsWith('aria/')) {
+        // Convert to Playwright role selector
+        const ariaLabel = selector.slice(5);
+        return `text=${ariaLabel}`;
+      }
+      // XPath selectors start with 'xpath/'
+      if (selector.startsWith('xpath/')) {
+        return selector.slice(6);
+      }
+      // Pierce selectors (shadow DOM) start with 'pierce/'
+      if (selector.startsWith('pierce/')) {
+        return selector.slice(7);
+      }
+      // Text selectors start with 'text/'
+      if (selector.startsWith('text/')) {
+        return `text=${selector.slice(5)}`;
+      }
+      // Otherwise it's a CSS selector
+      return selector;
+    }
+  }
+
+  // Fallback to first selector
+  return Array.isArray(selectors[0]) ? selectors[0][0] : selectors[0];
+}
+
 async function fetchPage(options) {
   const {
     url,
@@ -369,6 +578,29 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/replay') {
+    try {
+      const options = await parseBody(req);
+
+      if (!options.recording) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'recording is required (Chrome DevTools Recorder JSON format)' }));
+        return;
+      }
+
+      log(`Replaying recording: ${options.recording.title || 'untitled'}`);
+      const result = await replayRecording(options);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      console.error('Replay error:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok', browser: browser ? 'running' : 'not started' }));
@@ -398,7 +630,8 @@ process.on('SIGTERM', async () => {
 server.listen(PORT, () => {
   log(`Playwright service running on http://localhost:${PORT}`);
   log('Endpoints:');
-  log('  POST /fetch  - Fetch and render a page');
-  log('  POST /probe  - Probe page load performance metrics');
-  log('  GET  /health - Health check');
+  log('  POST /fetch    - Fetch and render a page');
+  log('  POST /probe    - Probe page load performance metrics');
+  log('  POST /replay   - Replay a Chrome DevTools Recorder JSON recording');
+  log('  GET  /health   - Health check');
 });

@@ -953,6 +953,84 @@ Command-line interface for the web crawler for agents with service fallbacks.
         (printf "Note: Use 'ar-crawl sample ~a' to view sample HTML content.~n" db-file)
         (printf "      Use 'ar-crawl extract ~a --fields \"{...}\"' to extract data.~n~n" db-file))))
 
+;; @function{cmd-replay}
+;; @description{Replay a Chrome DevTools Recorder JSON recording}
+(define (cmd-replay recording-file
+                    #:output [output-file #f]
+                    #:format [output-format 'json]
+                    #:verbose [verbose #f])
+
+  ;; Start playwright service (replay requires it)
+  (start-playwright-service #:verbose verbose)
+
+  (when verbose
+    (printf "Replaying recording: ~a~n" recording-file))
+
+  ;; Load recording JSON
+  (define recording
+    (with-handlers ([exn:fail? (lambda (e)
+                                  (eprintf "~a: failed to load recording: ~a~n"
+                                           (color-error "error") (exn-message e))
+                                  (exit EXIT-ERROR))])
+      (call-with-input-file recording-file
+        (lambda (port)
+          (string->jsexpr (port->string port))))))
+
+  ;; Call the playwright replay endpoint
+  (define replay-url (format "http://localhost:~a/replay" PLAYWRIGHT_SERVICE_PORT))
+
+  (define response
+    (with-handlers ([exn:fail? (lambda (e)
+                                  (eprintf "~a: replay failed: ~a~n"
+                                           (color-error "error") (exn-message e))
+                                  #f)])
+      (define req-data (jsexpr->string (hash 'recording recording)))
+      (define port (post-pure-port
+                    (string->url replay-url)
+                    (string->bytes/utf-8 req-data)
+                    (list "Content-Type: application/json")))
+      (define raw-response (port->string port))
+      (close-input-port port)
+      (string->jsexpr raw-response)))
+
+  (when (not response)
+    (exit EXIT-ERROR))
+
+  ;; Check for error in response
+  (when (hash-ref response 'error #f)
+    (eprintf "~a: ~a~n" (color-error "error") (hash-ref response 'error))
+    (exit EXIT-ERROR))
+
+  (when verbose
+    (define rec-info (hash-ref response 'recording (hash)))
+    (printf "Recording '~a' completed~n" (hash-ref rec-info 'title "untitled"))
+    (printf "Steps executed: ~a~n" (hash-ref rec-info 'stepsExecuted 0))
+    (printf "Final URL: ~a~n" (hash-ref response 'url ""))
+    (define meta (hash-ref response 'metadata (hash)))
+    (printf "Total time: ~a ms~n" (hash-ref meta 'totalTime 0)))
+
+  ;; Output results
+  (define output-data
+    (hash 'data (list (hash 'content (hash-ref response 'content "")
+                            'url (hash-ref response 'url "")
+                            'title (hash-ref response 'title "")
+                            'links (hash-ref response 'links '())))
+          'metadata (hash-ref response 'metadata (hash))
+          'recording (hash-ref response 'recording (hash))
+          'timestamp (generate-timestamp)))
+
+  (if output-file
+      (begin
+        (ensure-directory (or (path-only output-file) (current-directory)))
+        (call-with-output-file output-file
+          (lambda (port)
+            (display (jsexpr->string output-data #:indent 2) port))
+          #:exists 'replace)
+        (when verbose
+          (printf "Results saved to: ~a~n" output-file)))
+      ;; Output to stdout
+      (displayln (jsexpr->string output-data #:indent 2))))
+
 ;; @function{cmd-probe}
 ;; @description{Probe a URL to measure page load performance and suggest scraping parameters}
 (define (cmd-probe url
@@ -1589,6 +1667,22 @@ Command-line interface for the web crawler for agents with service fallbacks.
    #:args ()
    (void)))
 
+;; @function{parse-replay-args}
+;; @description{Parse replay command arguments after the recording file}
+(define (parse-replay-args args)
+  (command-line
+   #:program "ar-crawl replay"
+   #:argv args
+   #:once-each
+   [("-v" "--verbose") "Enable verbose output"
+    (verbose-mode #t)]
+   [("-o" "--output") file "Save results to file"
+    (output-file-param file)]
+   [("-f" "--format") fmt "Output format: json"
+    (output-format-param (string->symbol fmt))]
+   #:args ()
+   (void)))
+
 ;; @function{parse-crawl-args}
 ;; @description{Parse crawl command arguments after the URL}
 (define (parse-crawl-args args)
@@ -1908,6 +2002,21 @@ Command-line interface for the web crawler for agents with service fallbacks.
                      #:output (output-file-param)
                      #:format (output-format-param)))]
 
+       [(replay)
+        (when (empty? post-cmd-args)
+          (eprintf "~a: recording file required for replay command~n~n" (color-error "error"))
+          (eprintf "Usage: ar-crawl replay <recording.json> [options]~n")
+          (eprintf "~nThe recording file should be a Chrome DevTools Recorder JSON export.~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help replay"))
+          (exit EXIT-USAGE))
+        (define recording-file (car post-cmd-args))
+        (parse-replay-args (cdr post-cmd-args))
+        (with-playwright-cleanup
+          (cmd-replay recording-file
+                      #:verbose (verbose-mode)
+                      #:output (output-file-param)
+                      #:format (output-format-param)))]
+
        [(help)
         (if (empty? post-cmd-args)
             (show-main-help)
@@ -2038,7 +2147,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
 ;; Known commands for typo suggestions
 (define KNOWN-COMMANDS
-  '("crawl" "crawl-site" "probe" "sample" "extract" "stats"
+  '("crawl" "crawl-site" "probe" "replay" "sample" "extract" "stats"
     "health" "test" "config" "services" "monitor" "help" "version"))
 
 ;; @function{levenshtein-distance}
@@ -2102,6 +2211,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  crawl <url>         Crawl a single URL and extract content~n")
   (printf "  crawl-site <url>    Crawl an entire website following links~n")
   (printf "  probe <url>         Measure page load metrics to inform scraping params~n")
+  (printf "  replay <file>       Replay a Chrome DevTools Recorder JSON recording~n")
   (printf "  sample <file>       Show sample HTML from crawl results (to figure out XPaths)~n")
   (printf "  extract <file>      Extract structured data from crawl results using XPath~n")
   (printf "  stats <file.db>     Show statistics about crawl database~n")
@@ -2567,6 +2677,68 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  This command uses Playwright and requires the playwright service.~n")
   (printf "  It will be started automatically if not running.~n~n"))
 
+;; @function{show-replay-help}
+;; @description{Show help for replay command}
+(define (show-replay-help)
+  (printf "~nREPLAY - Replay Chrome DevTools Recorder recordings~n")
+  (printf "====================================================~n~n")
+  (printf "Replay a Chrome DevTools Recorder JSON recording to automate browser~n")
+  (printf "interactions and capture the final page state.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl replay <recording.json> [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -v, --verbose       Show detailed step execution~n")
+  (printf "  -o, --output FILE   Save results to JSON file~n")
+  (printf "  -f, --format FMT    Output format: json (default)~n~n")
+
+  (printf "RECORDING FORMAT~n")
+  (printf "  Chrome DevTools Recorder exports JSON files with interaction steps.~n~n")
+  (printf "  Supported step types:~n")
+  (printf "    navigate          - Go to a URL~n")
+  (printf "    click             - Click an element~n")
+  (printf "    doubleClick       - Double-click an element~n")
+  (printf "    change            - Fill in a form field~n")
+  (printf "    keyDown/keyUp     - Keyboard input~n")
+  (printf "    scroll            - Scroll page or element~n")
+  (printf "    hover             - Hover over element~n")
+  (printf "    waitForElement    - Wait for element to appear~n")
+  (printf "    waitForExpression - Wait for JS expression~n")
+  (printf "    setViewport       - Set browser viewport size~n~n")
+
+  (printf "HOW TO CREATE A RECORDING~n")
+  (printf "  1. Open Chrome DevTools (F12)~n")
+  (printf "  2. Click 'More tools' > 'Recorder' (or Ctrl+Shift+P, type 'Recorder')~n")
+  (printf "  3. Click 'Start new recording', name it, click 'Start'~n")
+  (printf "  4. Perform your interactions in the browser~n")
+  (printf "  5. Click 'End recording'~n")
+  (printf "  6. Click 'Export' > 'JSON' to save the recording file~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Basic replay~n")
+  (printf "  ar-crawl replay login-flow.json~n~n")
+  (printf "  # Replay with verbose output~n")
+  (printf "  ar-crawl replay checkout.json -v~n~n")
+  (printf "  # Save final page state~n")
+  (printf "  ar-crawl replay user-journey.json -o result.json~n~n")
+  (printf "  # Then extract data from the result~n")
+  (printf "  ar-crawl extract result.json --fields '{\"title\": \"//title\"}'~n~n")
+
+  (printf "OUTPUT~n")
+  (printf "  Returns JSON with:~n")
+  (printf "    content           - Final page HTML~n")
+  (printf "    url               - Final page URL~n")
+  (printf "    title             - Page title~n")
+  (printf "    links             - All links on page~n")
+  (printf "    recording.title   - Recording name~n")
+  (printf "    recording.stepsExecuted - Number of steps run~n")
+  (printf "    recording.stepResults - Per-step success/failure~n~n")
+
+  (printf "NOTE~n")
+  (printf "  This command uses Playwright and requires the playwright service.~n")
+  (printf "  It will be started automatically if not running.~n~n"))
+
 ;; @function{show-command-help}
 ;; @description{Show help for a specific command}
 (define (show-command-help command)
@@ -2574,6 +2746,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(crawl) (show-crawl-help)]
     [(crawl-site) (show-crawl-site-help)]
     [(probe) (show-probe-help)]
+    [(replay) (show-replay-help)]
     [(extract) (show-extract-help)]
     [(sample) (show-sample-help)]
     [(health) (show-health-help)]
@@ -2583,7 +2756,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(monitor) (show-monitor-help)]
     [else
      (printf "Unknown command: ~a~n~n" command)
-     (printf "Available commands: crawl, crawl-site, probe, extract, sample, health, test, config, services, monitor~n")
+     (printf "Available commands: crawl, crawl-site, probe, replay, extract, sample, health, test, config, services, monitor~n")
      (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters
