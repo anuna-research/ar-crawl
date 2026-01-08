@@ -919,6 +919,28 @@ commit
 | `commit [file]` | End session, save recording |
 | `exit` | Close without saving |
 
+### Step Annotations (LLM Reasoning)
+
+Every action can include a `title` field to document the agent's reasoning. These annotations are preserved in the recording for debugging and auditing:
+
+```bash
+# Annotate each step with reasoning
+{"type": "goto", "url": "https://example.com", "title": "Navigate to example domain to verify site is up"}
+{"type": "click", "selector": "a", "title": "Click 'More Information' link to access documentation"}
+{"type": "fill", "selector": "#search", "value": "query", "title": "Search for relevant content"}
+```
+
+The recording preserves these annotations:
+```json
+{
+  "title": "LLM Agent Session",
+  "steps": [
+    {"type": "navigate", "url": "https://example.com", "title": "Navigate to example domain to verify site is up", "timestamp": "..."},
+    {"type": "click", "selectors": [["a"]], "title": "Click 'More Information' link to access documentation", "timestamp": "..."}
+  ]
+}
+```
+
 ### State Filtering (Reduce Context Window)
 
 The `state` command supports filtering to minimize context window usage:
