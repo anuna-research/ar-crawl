@@ -25,7 +25,16 @@ function log(...args) {
 }
 
 // Convert session step to Chrome DevTools Recorder format
+// Returns null for steps that should not be recorded
+// See: https://github.com/niconiahi/replay/blob/main/src/Schema.ts
 function toDevToolsFormat(action) {
+  // Filter out unsupported/internal step types
+  // Chrome DevTools Recorder doesn't support: wait*, screenshot, evaluate
+  const unsupportedTypes = ['waitForLoadState', 'waitForTimeout', 'waitForNavigation', 'screenshot', 'evaluate'];
+  if (unsupportedTypes.includes(action.type)) {
+    return null;
+  }
+
   const step = { type: action.type };
 
   // Map action types to DevTools Recorder types
@@ -33,7 +42,7 @@ function toDevToolsFormat(action) {
     'goto': 'navigate',
     'dblclick': 'doubleClick',
     'fill': 'change',
-    'type': 'keySequence'
+    'type': 'keyDown'  // keySequence not valid, use keyDown
   };
 
   if (typeMap[action.type]) {
@@ -46,11 +55,30 @@ function toDevToolsFormat(action) {
   }
 
   // Convert selector to selectors array (DevTools format)
+  // Chrome DevTools Recorder uses: CSS, XPath, aria/, pierce/, xpath/
+  // Playwright uses: text=, css=, xpath=, etc.
   if (action.selector) {
-    step.selectors = [[action.selector]];
+    let selector = action.selector;
+
+    // Convert Playwright text= selector to XPath contains() for partial matching
+    // Playwright's text= does partial matching, Chrome's aria/ needs exact match
+    if (selector.startsWith('text=')) {
+      const text = selector.slice(5); // Remove 'text='
+      // Escape quotes in text for XPath
+      const escapedText = text.replace(/'/g, "\\'");
+      selector = `xpath///*[contains(text(), '${escapedText}')]`;
+    }
+
+    step.selectors = [[selector]];
   }
 
-  // Copy value for input actions
+  // Click and doubleClick require offsetX and offsetY
+  if (step.type === 'click' || step.type === 'doubleClick') {
+    step.offsetX = action.offsetX || 1;
+    step.offsetY = action.offsetY || 1;
+  }
+
+  // Copy value for input/change actions
   if (action.value !== undefined) {
     step.value = action.value;
   }
@@ -70,17 +98,14 @@ function toDevToolsFormat(action) {
     step.expression = action.expression;
   }
 
-  // Add timestamp
-  step.timestamp = action.timestamp || new Date().toISOString();
-
-  // Copy any error
-  if (action.error) {
-    step.error = action.error;
-  }
-
-  // Copy title/annotation for LLM agent reasoning
-  if (action.title) {
-    step.title = action.title;
+  // For customStep, use standard format with name and parameters
+  // Chrome DevTools Recorder displays the title field
+  if (action.type === 'customStep') {
+    step.name = action.name || 'note';
+    // Only include title (from note), not the original note field
+    step.parameters = {
+      title: (action.parameters && action.parameters.note) || ''
+    };
   }
 
   return step;
@@ -670,7 +695,11 @@ async function executeAction(sessionId, action) {
     throw error;
   } finally {
     // Record step in Chrome DevTools Recorder format (for compatibility)
-    session.steps.push(toDevToolsFormat(stepRecord));
+    // Skip unsupported step types (toDevToolsFormat returns null for these)
+    const devToolsStep = toDevToolsFormat(stepRecord);
+    if (devToolsStep) {
+      session.steps.push(devToolsStep);
+    }
   }
 
   // Get current state
