@@ -3012,8 +3012,14 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
   (printf "COMMANDS (stdin)~n")
   (printf "  {\"type\": \"...\", ...}   Execute Playwright action (JSON)~n")
-  (printf "  state                   Get current page state (accessibility snapshot)~n")
-  (printf "  state --html            Get state including raw HTML~n")
+  (printf "  state                   Get current page state (url/title only)~n")
+  (printf "  state --actions         Get clickable elements~n")
+  (printf "  state --forms           Get form inputs~n")
+  (printf "  state --full            Get full accessibility snapshot~n")
+  (printf "  state --html            Include raw HTML in response~n")
+  (printf "  state --fields '...'    Extract fields by XPath (JSON map)~n")
+  (printf "  state --parent \"...\" --fields '...'~n")
+  (printf "                          Extract repeated items with parent context~n")
   (printf "  commit [file]           End session, output/save recording~n")
   (printf "  exit                    Close session without saving~n")
   (printf "  help                    Show available actions~n~n")
@@ -3067,7 +3073,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  All output is JSON, one object per line:~n")
   (printf "  - Session start: {\"sessionId\": \"...\", \"status\": \"ready\"}~n")
   (printf "  - Action result: {\"success\": true, \"url\": \"...\", \"title\": \"...\"}~n")
-  (printf "  - State: {\"url\": \"...\", \"title\": \"...\", \"snapshot\": {...}}~n")
+  (printf "  - State (basic): {\"url\": \"...\", \"title\": \"...\"}~n")
+  (printf "  - State (--actions/--forms/--full): includes \"snapshot\": {...}~n")
+  (printf "  - State (--fields): includes \"results\": {...} or [...]~n")
   (printf "  - Commit: {\"status\": \"committed\", \"recording\": {...}}~n")
   (printf "  - Error: {\"success\": false, \"error\": \"...\"}~n~n")
 
@@ -3078,9 +3086,21 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  {\"type\": \"goto\", \"url\": \"https://example.com\"}~n")
   (printf "  {\"success\":true,\"url\":\"https://example.com/\",\"title\":\"Example\"}~n~n")
 
-  (printf "  # Get page state~n")
+  (printf "  # Get page state (basic - url/title only)~n")
   (printf "  state~n")
-  (printf "  {\"url\":\"...\",\"title\":\"...\",\"snapshot\":{\"tree\":\"...\",\"elements\":[...]}}~n~n")
+  (printf "  {\"url\":\"...\",\"title\":\"...\"}~n~n")
+
+  (printf "  # Get clickable elements or form inputs~n")
+  (printf "  state --actions~n")
+  (printf "  state --forms~n~n")
+
+  (printf "  # Extract data using XPath~n")
+  (printf "  state --fields '{\"title\": \"//h1\", \"links\": \"//a/@href\"}'~n")
+  (printf "  {\"url\":\"...\",\"title\":\"...\",\"results\":{\"title\":\"Page Title\",\"links\":[...]}}~n~n")
+
+  (printf "  # Extract repeated items (e.g., table rows)~n")
+  (printf "  state --parent \"//tr\" --fields '{\"name\": \".//td[1]\", \"price\": \".//td[2]\"}'~n")
+  (printf "  {\"url\":\"...\",\"title\":\"...\",\"results\":[{\"name\":\"...\",\"price\":\"...\"},...]}}~n~n")
 
   (printf "  # Save recording~n")
   (printf "  commit flow.json~n")
