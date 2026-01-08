@@ -501,6 +501,97 @@ async function executeAction(sessionId, action) {
         result.selector = infoSelector;
         break;
 
+      // Query - extract specific data from page (for LLM agents)
+      case 'query':
+        const querySelector = action.selector;
+        const extractProps = action.extract || ['text'];
+        const limit = action.limit || 20;
+
+        result.results = await page.evaluate(({ selector, props, limit }) => {
+          const elements = document.querySelectorAll(selector);
+          const results = [];
+
+          for (let i = 0; i < Math.min(elements.length, limit); i++) {
+            const el = elements[i];
+            const item = {};
+
+            for (const prop of props) {
+              switch (prop) {
+                case 'text':
+                  item.text = (el.textContent || '').trim().slice(0, 100);
+                  break;
+                case 'href':
+                  item.href = el.href || el.getAttribute('href') || null;
+                  break;
+                case 'value':
+                  item.value = el.value || null;
+                  break;
+                case 'src':
+                  item.src = el.src || el.getAttribute('src') || null;
+                  break;
+                case 'id':
+                  item.id = el.id || null;
+                  break;
+                case 'class':
+                  item.class = el.className || null;
+                  break;
+                case 'name':
+                  item.name = el.name || el.getAttribute('name') || null;
+                  break;
+                case 'type':
+                  item.type = el.type || el.getAttribute('type') || null;
+                  break;
+                case 'placeholder':
+                  item.placeholder = el.placeholder || el.getAttribute('placeholder') || null;
+                  break;
+                case 'checked':
+                  item.checked = el.checked;
+                  break;
+                case 'disabled':
+                  item.disabled = el.disabled;
+                  break;
+                case 'html':
+                  item.html = el.innerHTML.slice(0, 200);
+                  break;
+                case 'tag':
+                  item.tag = el.tagName.toLowerCase();
+                  break;
+                case 'selector':
+                  // Generate a unique selector for this element
+                  if (el.id) {
+                    item.selector = '#' + el.id;
+                  } else if (el.getAttribute('data-testid')) {
+                    item.selector = `[data-testid="${el.getAttribute('data-testid')}"]`;
+                  } else if (el.name) {
+                    item.selector = `[name="${el.name}"]`;
+                  } else {
+                    // nth-child selector
+                    const parent = el.parentElement;
+                    if (parent) {
+                      const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+                      const idx = siblings.indexOf(el) + 1;
+                      item.selector = `${el.tagName.toLowerCase()}:nth-of-type(${idx})`;
+                    } else {
+                      item.selector = el.tagName.toLowerCase();
+                    }
+                  }
+                  break;
+              }
+            }
+
+            // Only add non-empty items
+            if (Object.keys(item).some(k => item[k] !== null && item[k] !== '')) {
+              results.push(item);
+            }
+          }
+
+          return results;
+        }, { selector: querySelector, props: extractProps, limit });
+
+        result.count = result.results.length;
+        result.selector = querySelector;
+        break;
+
       default:
         // Try to handle as evaluating JS if it's not a standard action
         if (action.expression) {
@@ -534,17 +625,98 @@ async function getSessionState(sessionId, options = {}) {
   }
 
   const { page } = session;
-  const { includeHtml = false, includeSnapshot = true } = options;
+  const {
+    view = 'minimal',  // minimal, actions, forms, full
+    query = null,      // CSS selector to query specific elements
+    includeHtml = false
+  } = options;
 
+  // Always include basic info
   const result = {
     url: page.url(),
-    title: await page.title(),
-    stepCount: session.steps.length
+    title: await page.title()
   };
 
-  // Include accessibility snapshot for LLM consumption (concise)
-  if (includeSnapshot) {
-    result.snapshot = await getAccessibilitySnapshot(page);
+  // Handle different view modes
+  switch (view) {
+    case 'minimal':
+      // Just URL and title - nothing else needed
+      break;
+
+    case 'actions':
+      // Only clickable elements
+      result.actions = await page.evaluate(() => {
+        const elements = [];
+        const seen = new Set();
+        document.querySelectorAll('a[href], button, [role="button"], input[type="submit"], [onclick]').forEach(el => {
+          if (elements.length >= 30) return;
+          const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 50);
+          if (!text || seen.has(text)) return;
+          seen.add(text);
+
+          let selector;
+          if (el.id) selector = '#' + el.id;
+          else if (el.getAttribute('data-testid')) selector = `[data-testid="${el.getAttribute('data-testid')}"]`;
+          else if (el.name) selector = `[name="${el.name}"]`;
+          else if (el.getAttribute('aria-label')) selector = `[aria-label="${el.getAttribute('aria-label')}"]`;
+          else selector = null;
+
+          const item = { text };
+          if (selector) item.selector = selector;
+          if (el.tagName === 'A' && el.href) item.href = el.href.slice(0, 80);
+          elements.push(item);
+        });
+        return elements;
+      });
+      break;
+
+    case 'forms':
+      // Only form inputs
+      result.inputs = await page.evaluate(() => {
+        const elements = [];
+        document.querySelectorAll('input:not([type="hidden"]), textarea, select').forEach(el => {
+          if (elements.length >= 20) return;
+          const item = {
+            type: el.type || el.tagName.toLowerCase(),
+            name: el.name || el.id || el.getAttribute('aria-label') || el.placeholder || null
+          };
+
+          if (el.id) item.selector = '#' + el.id;
+          else if (el.name) item.selector = `[name="${el.name}"]`;
+          else if (el.getAttribute('aria-label')) item.selector = `[aria-label="${el.getAttribute('aria-label')}"]`;
+
+          if (el.value) item.value = el.value.slice(0, 50);
+          if (el.placeholder) item.placeholder = el.placeholder.slice(0, 30);
+          if (el.type === 'checkbox' || el.type === 'radio') item.checked = el.checked;
+
+          elements.push(item);
+        });
+        return elements;
+      });
+      break;
+
+    case 'full':
+      // Full snapshot (legacy behavior)
+      result.snapshot = await getAccessibilitySnapshot(page);
+      break;
+  }
+
+  // Query specific elements if requested
+  if (query) {
+    result.query = await page.evaluate((selector) => {
+      const elements = [];
+      document.querySelectorAll(selector).forEach(el => {
+        if (elements.length >= 20) return;
+        const text = (el.textContent || '').trim().slice(0, 100);
+        const item = { text };
+        if (el.id) item.selector = '#' + el.id;
+        else if (el.name) item.selector = `[name="${el.name}"]`;
+        if (el.href) item.href = el.href;
+        if (el.value) item.value = el.value;
+        elements.push(item);
+      });
+      return elements;
+    }, query);
   }
 
   // Only include raw HTML if explicitly requested
@@ -1289,8 +1461,9 @@ const server = http.createServer(async (req, res) => {
                  const urlParts = req.url.split('?');
                  if (urlParts[1]) {
                      const params = new URLSearchParams(urlParts[1]);
-                     options.includeHtml = params.get('html') === 'true' || params.get('includeHtml') === 'true';
-                     options.includeSnapshot = params.get('snapshot') !== 'false' && params.get('includeSnapshot') !== 'false';
+                     if (params.get('view')) options.view = params.get('view');
+                     if (params.get('query')) options.query = params.get('query');
+                     if (params.get('html') === 'true') options.includeHtml = true;
                  }
              }
              const result = await getSessionState(sessionId, options);
