@@ -1,6 +1,15 @@
 const http = require('http');
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const crypto = require('crypto');
+
+// Session storage
+const sessions = new Map();
+
+// Helper for session IDs without external deps
+function uuidv4() {
+  return crypto.randomUUID();
+}
 
 // Add stealth plugin to avoid bot detection
 chromium.use(StealthPlugin());
@@ -30,6 +39,616 @@ async function initBrowser() {
   }
   return browser;
 }
+
+// Session management
+async function createSession(options = {}) {
+  const sessionId = uuidv4();
+  const {
+    viewport = { width: 1920, height: 1080 },
+    userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  } = options;
+
+  const b = await initBrowser();
+  const context = await b.newContext({ viewport, userAgent });
+  const page = await context.newPage();
+
+  // Initialize session state
+  const session = {
+    id: sessionId,
+    context,
+    page,
+    createdAt: Date.now(),
+    lastActivity: Date.now(),
+    steps: [],
+    viewport,
+    userAgent
+  };
+
+  sessions.set(sessionId, session);
+  log(`Session created: ${sessionId}`);
+
+  return sessionId;
+}
+
+async function executeAction(sessionId, action) {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    throw new Error('Session not found');
+  }
+
+  session.lastActivity = Date.now();
+  const { page, context } = session;
+  const result = { success: true };
+  const stepRecord = {
+    type: action.type,
+    ...action,
+    timestamp: new Date().toISOString()
+  };
+
+  try {
+    switch (action.type) {
+      // Navigation actions (matching Playwright API)
+      case 'goto':
+      case 'navigate':
+        await page.goto(action.url, {
+          waitUntil: action.waitUntil || 'networkidle',
+          timeout: action.timeout || 30000
+        });
+        result.url = page.url();
+        result.title = await page.title();
+        break;
+
+      case 'goBack':
+        await page.goBack({ timeout: action.timeout || 30000 });
+        result.url = page.url();
+        break;
+
+      case 'goForward':
+        await page.goForward({ timeout: action.timeout || 30000 });
+        result.url = page.url();
+        break;
+
+      case 'reload':
+        await page.reload({
+          waitUntil: action.waitUntil || 'networkidle',
+          timeout: action.timeout || 30000
+        });
+        result.url = page.url();
+        break;
+
+      // Click actions
+      case 'click':
+        const clickSelector = action.selector || resolveSelector(action.selectors);
+        await page.click(clickSelector, {
+          button: action.button || 'left',
+          clickCount: action.clickCount || 1,
+          delay: action.delay,
+          force: action.force,
+          modifiers: action.modifiers,
+          position: action.position,
+          timeout: action.timeout || 30000
+        });
+        result.selector = clickSelector;
+        break;
+
+      case 'dblclick':
+      case 'doubleClick':
+        const dblSelector = action.selector || resolveSelector(action.selectors);
+        await page.dblclick(dblSelector, {
+          button: action.button || 'left',
+          delay: action.delay,
+          force: action.force,
+          modifiers: action.modifiers,
+          position: action.position,
+          timeout: action.timeout || 30000
+        });
+        result.selector = dblSelector;
+        break;
+
+      // Input actions
+      case 'fill':
+      case 'change':
+        const fillSelector = action.selector || resolveSelector(action.selectors);
+        await page.fill(fillSelector, action.value, {
+          force: action.force,
+          timeout: action.timeout || 30000
+        });
+        result.selector = fillSelector;
+        break;
+
+      case 'type':
+        const typeSelector = action.selector || resolveSelector(action.selectors);
+        await page.type(typeSelector, action.text || action.value, {
+          delay: action.delay,
+          timeout: action.timeout || 30000
+        });
+        result.selector = typeSelector;
+        break;
+
+      case 'clear':
+        const clearSelector = action.selector || resolveSelector(action.selectors);
+        await page.fill(clearSelector, '', { timeout: action.timeout || 30000 });
+        result.selector = clearSelector;
+        break;
+
+      case 'selectOption':
+        const selectSelector = action.selector || resolveSelector(action.selectors);
+        const selected = await page.selectOption(selectSelector, action.values || action.value, {
+          force: action.force,
+          timeout: action.timeout || 30000
+        });
+        result.selector = selectSelector;
+        result.selected = selected;
+        break;
+
+      case 'check':
+        const checkSelector = action.selector || resolveSelector(action.selectors);
+        await page.check(checkSelector, {
+          force: action.force,
+          position: action.position,
+          timeout: action.timeout || 30000
+        });
+        result.selector = checkSelector;
+        break;
+
+      case 'uncheck':
+        const uncheckSelector = action.selector || resolveSelector(action.selectors);
+        await page.uncheck(uncheckSelector, {
+          force: action.force,
+          position: action.position,
+          timeout: action.timeout || 30000
+        });
+        result.selector = uncheckSelector;
+        break;
+
+      case 'setChecked':
+        const setCheckedSelector = action.selector || resolveSelector(action.selectors);
+        await page.setChecked(setCheckedSelector, action.checked, {
+          force: action.force,
+          position: action.position,
+          timeout: action.timeout || 30000
+        });
+        result.selector = setCheckedSelector;
+        break;
+
+      // Hover and focus
+      case 'hover':
+        const hoverSelector = action.selector || resolveSelector(action.selectors);
+        await page.hover(hoverSelector, {
+          force: action.force,
+          modifiers: action.modifiers,
+          position: action.position,
+          timeout: action.timeout || 30000
+        });
+        result.selector = hoverSelector;
+        break;
+
+      case 'focus':
+        const focusSelector = action.selector || resolveSelector(action.selectors);
+        await page.focus(focusSelector, { timeout: action.timeout || 30000 });
+        result.selector = focusSelector;
+        break;
+
+      // Keyboard actions
+      case 'keyDown':
+        await page.keyboard.down(action.key);
+        break;
+
+      case 'keyUp':
+        await page.keyboard.up(action.key);
+        break;
+
+      case 'press':
+        if (action.selector) {
+          await page.press(action.selector, action.key, {
+            delay: action.delay,
+            timeout: action.timeout || 30000
+          });
+        } else {
+          await page.keyboard.press(action.key, { delay: action.delay });
+        }
+        break;
+
+      case 'insertText':
+        await page.keyboard.insertText(action.text);
+        break;
+
+      // Scroll actions
+      case 'scroll':
+        if (action.selector || action.selectors) {
+          const scrollSelector = action.selector || resolveSelector(action.selectors);
+          await page.evaluate(({ selector, x, y }) => {
+            const el = document.querySelector(selector);
+            if (el) el.scrollTo(x || 0, y || 0);
+          }, { selector: scrollSelector, x: action.x, y: action.y });
+        } else {
+          await page.evaluate(({ x, y }) => {
+            window.scrollTo(x || 0, y || 0);
+          }, { x: action.x, y: action.y });
+        }
+        break;
+
+      case 'scrollIntoView':
+        const scrollIntoViewSelector = action.selector || resolveSelector(action.selectors);
+        await page.locator(scrollIntoViewSelector).scrollIntoViewIfNeeded({
+          timeout: action.timeout || 30000
+        });
+        result.selector = scrollIntoViewSelector;
+        break;
+
+      // Wait actions
+      case 'waitForSelector':
+      case 'waitForElement':
+        const waitSelector = action.selector || resolveSelector(action.selectors);
+        await page.waitForSelector(waitSelector, {
+          state: action.state || (action.visible === false ? 'hidden' : 'visible'),
+          timeout: action.timeout || 30000
+        });
+        result.selector = waitSelector;
+        break;
+
+      case 'waitForNavigation':
+        await page.waitForNavigation({
+          url: action.url,
+          waitUntil: action.waitUntil || 'networkidle',
+          timeout: action.timeout || 30000
+        });
+        result.url = page.url();
+        break;
+
+      case 'waitForLoadState':
+        await page.waitForLoadState(action.state || 'networkidle', {
+          timeout: action.timeout || 30000
+        });
+        break;
+
+      case 'waitForFunction':
+      case 'waitForExpression':
+        await page.waitForFunction(action.expression || action.pageFunction, {
+          timeout: action.timeout || 30000,
+          polling: action.polling
+        });
+        break;
+
+      case 'waitForTimeout':
+        await page.waitForTimeout(action.timeout || 1000);
+        break;
+
+      // Screenshot and content
+      case 'screenshot':
+        const screenshotOptions = {
+          fullPage: action.fullPage,
+          type: action.format || 'png',
+          quality: action.quality,
+          omitBackground: action.omitBackground
+        };
+        if (action.selector) {
+          const element = page.locator(action.selector);
+          const buffer = await element.screenshot(screenshotOptions);
+          result.screenshot = buffer.toString('base64');
+        } else {
+          const buffer = await page.screenshot(screenshotOptions);
+          result.screenshot = buffer.toString('base64');
+        }
+        break;
+
+      // Evaluate JavaScript
+      case 'evaluate':
+        result.value = await page.evaluate(action.expression || action.pageFunction);
+        break;
+
+      case 'evaluateHandle':
+        const handle = await page.evaluateHandle(action.expression || action.pageFunction);
+        result.value = await handle.jsonValue().catch(() => 'Handle cannot be serialized');
+        break;
+
+      // Frame handling
+      case 'frame':
+        const frame = page.frame(action.name || action.url);
+        if (!frame) throw new Error(`Frame not found: ${action.name || action.url}`);
+        // Store current frame context for subsequent actions
+        session.currentFrame = frame;
+        result.frameName = frame.name();
+        break;
+
+      case 'mainFrame':
+        session.currentFrame = null;
+        break;
+
+      // File upload
+      case 'setInputFiles':
+        const fileSelector = action.selector || resolveSelector(action.selectors);
+        await page.setInputFiles(fileSelector, action.files, {
+          timeout: action.timeout || 30000
+        });
+        result.selector = fileSelector;
+        break;
+
+      // Dialog handling
+      case 'acceptDialog':
+        session.dialogHandler = (dialog) => dialog.accept(action.promptText);
+        page.once('dialog', session.dialogHandler);
+        break;
+
+      case 'dismissDialog':
+        session.dialogHandler = (dialog) => dialog.dismiss();
+        page.once('dialog', session.dialogHandler);
+        break;
+
+      // Viewport and emulation
+      case 'setViewport':
+      case 'setViewportSize':
+        await page.setViewportSize({
+          width: action.width,
+          height: action.height
+        });
+        session.viewport = { width: action.width, height: action.height };
+        break;
+
+      case 'emulateMedia':
+        await page.emulateMedia({
+          media: action.media,
+          colorScheme: action.colorScheme,
+          reducedMotion: action.reducedMotion,
+          forcedColors: action.forcedColors
+        });
+        break;
+
+      case 'setGeolocation':
+        await context.setGeolocation({
+          latitude: action.latitude,
+          longitude: action.longitude,
+          accuracy: action.accuracy
+        });
+        break;
+
+      case 'emulateNetworkConditions':
+        const client = await context.newCDPSession(page);
+        await client.send('Network.emulateNetworkConditions', {
+          offline: action.offline || false,
+          latency: action.latency || 0,
+          downloadThroughput: action.download !== undefined ? action.download : -1,
+          uploadThroughput: action.upload !== undefined ? action.upload : -1
+        });
+        break;
+
+      // Locator-based actions (for complex queries)
+      case 'locator':
+        // Execute action on a locator chain
+        let locator = page.locator(action.selector);
+        if (action.filter) {
+          locator = locator.filter(action.filter);
+        }
+        if (action.nth !== undefined) {
+          locator = locator.nth(action.nth);
+        }
+        if (action.first) locator = locator.first();
+        if (action.last) locator = locator.last();
+
+        // Execute the method
+        switch (action.method) {
+          case 'click': await locator.click(action.options); break;
+          case 'fill': await locator.fill(action.value, action.options); break;
+          case 'type': await locator.type(action.text, action.options); break;
+          case 'check': await locator.check(action.options); break;
+          case 'uncheck': await locator.uncheck(action.options); break;
+          case 'hover': await locator.hover(action.options); break;
+          case 'focus': await locator.focus(action.options); break;
+          case 'press': await locator.press(action.key, action.options); break;
+          case 'selectOption': await locator.selectOption(action.values, action.options); break;
+          case 'scrollIntoViewIfNeeded': await locator.scrollIntoViewIfNeeded(action.options); break;
+          case 'screenshot':
+            const locBuffer = await locator.screenshot(action.options);
+            result.screenshot = locBuffer.toString('base64');
+            break;
+          case 'textContent':
+            result.value = await locator.textContent(action.options);
+            break;
+          case 'innerText':
+            result.value = await locator.innerText(action.options);
+            break;
+          case 'innerHTML':
+            result.value = await locator.innerHTML(action.options);
+            break;
+          case 'getAttribute':
+            result.value = await locator.getAttribute(action.name, action.options);
+            break;
+          case 'inputValue':
+            result.value = await locator.inputValue(action.options);
+            break;
+          case 'isVisible':
+            result.value = await locator.isVisible(action.options);
+            break;
+          case 'isEnabled':
+            result.value = await locator.isEnabled(action.options);
+            break;
+          case 'isChecked':
+            result.value = await locator.isChecked(action.options);
+            break;
+          case 'count':
+            result.value = await locator.count();
+            break;
+          default:
+            throw new Error(`Unknown locator method: ${action.method}`);
+        }
+        result.selector = action.selector;
+        break;
+
+      // Custom step (for recording agent thoughts/notes)
+      case 'customStep':
+        // Just record it, no browser action
+        break;
+
+      // Get element info (useful for agents)
+      case 'getElementInfo':
+        const infoSelector = action.selector || resolveSelector(action.selectors);
+        const element = page.locator(infoSelector);
+        result.info = {
+          visible: await element.isVisible().catch(() => false),
+          enabled: await element.isEnabled().catch(() => false),
+          checked: await element.isChecked().catch(() => null),
+          text: await element.textContent().catch(() => null),
+          value: await element.inputValue().catch(() => null),
+          tagName: await element.evaluate(el => el.tagName.toLowerCase()).catch(() => null),
+          attributes: await element.evaluate(el => {
+            const attrs = {};
+            for (const attr of el.attributes) {
+              attrs[attr.name] = attr.value;
+            }
+            return attrs;
+          }).catch(() => {})
+        };
+        result.selector = infoSelector;
+        break;
+
+      default:
+        // Try to handle as evaluating JS if it's not a standard action
+        if (action.expression) {
+          result.value = await page.evaluate(action.expression);
+        } else {
+          log(`Unknown action type: ${action.type}`);
+          stepRecord.warning = `Unknown action type: ${action.type}`;
+        }
+    }
+  } catch (error) {
+    result.success = false;
+    result.error = error.message;
+    stepRecord.error = error.message;
+    throw error;
+  } finally {
+    // Record step regardless of success/failure (fail steps are important context)
+    session.steps.push(stepRecord);
+  }
+
+  // Get current state
+  result.url = page.url();
+  result.title = await page.title();
+
+  return result;
+}
+
+async function getSessionState(sessionId, options = {}) {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    throw new Error('Session not found');
+  }
+
+  const { page } = session;
+  const { includeHtml = false, includeSnapshot = true } = options;
+
+  const result = {
+    url: page.url(),
+    title: await page.title(),
+    stepCount: session.steps.length
+  };
+
+  // Include accessibility snapshot for LLM consumption (concise)
+  if (includeSnapshot) {
+    result.snapshot = await getAccessibilitySnapshot(page);
+  }
+
+  // Only include raw HTML if explicitly requested
+  if (includeHtml) {
+    result.html = await page.content();
+  }
+
+  return result;
+}
+
+// Get concise page snapshot for LLM agents
+async function getAccessibilitySnapshot(page) {
+  try {
+    // Extract key interactive elements and page structure
+    const snapshot = await page.evaluate(() => {
+      const result = {
+        elements: [],
+        headings: [],
+        text: ''
+      };
+      const maxElements = 50;
+
+      // Get page text content (truncated)
+      const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+      result.text = bodyText.slice(0, 500) + (bodyText.length > 500 ? '...' : '');
+
+      // Get headings for structure
+      document.querySelectorAll('h1, h2, h3').forEach((el, i) => {
+        if (result.headings.length >= 10) return;
+        const text = el.textContent.trim().slice(0, 60);
+        if (text) result.headings.push({ level: el.tagName.toLowerCase(), text });
+      });
+
+      // Get clickable elements
+      const clickable = document.querySelectorAll('a, button, [role="button"], [onclick], input[type="submit"]');
+      clickable.forEach((el) => {
+        if (result.elements.length >= maxElements) return;
+        const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 50);
+        if (!text) return;
+        const selector = getUniqueSelector(el);
+        const href = el.tagName === 'A' ? el.getAttribute('href') : null;
+        result.elements.push({
+          type: el.tagName.toLowerCase(),
+          text,
+          selector,
+          ...(href && { href: href.slice(0, 100) })
+        });
+      });
+
+      // Get input fields
+      const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]), textarea, select');
+      inputs.forEach((el) => {
+        if (result.elements.length >= maxElements) return;
+        const label = el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
+                      el.getAttribute('name') || el.id || '';
+        const selector = getUniqueSelector(el);
+        const inputType = el.type || el.tagName.toLowerCase();
+        result.elements.push({
+          type: 'input',
+          inputType,
+          label: label.slice(0, 30),
+          selector
+        });
+      });
+
+      function getUniqueSelector(el) {
+        if (el.id) return '#' + el.id;
+        if (el.getAttribute('data-testid')) return '[data-testid="' + el.getAttribute('data-testid') + '"]';
+        if (el.getAttribute('aria-label')) return '[aria-label="' + el.getAttribute('aria-label') + '"]';
+        if (el.name) return '[name="' + el.name + '"]';
+        // Fallback to CSS path
+        const path = [];
+        let current = el;
+        while (current && current.nodeType === Node.ELEMENT_NODE && path.length < 3) {
+          let selector = current.tagName.toLowerCase();
+          if (current.className && typeof current.className === 'string') {
+            const classes = current.className.trim().split(/\s+/).filter(c => c && !c.includes(':'));
+            if (classes.length) selector += '.' + classes.slice(0, 2).join('.');
+          }
+          path.unshift(selector);
+          current = current.parentNode;
+        }
+        return path.join(' > ');
+      }
+
+      return result;
+    });
+
+    return snapshot;
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function closeSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (session) {
+    await session.context.close();
+    sessions.delete(sessionId);
+    log(`Session closed: ${sessionId}`);
+  }
+}
+
+// Resolve Chrome DevTools Recorder selector format to Playwright selector
 
 async function probePage(options) {
   const {
@@ -622,6 +1241,105 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: error.message }));
     }
     return;
+  }
+
+  // Session endpoints
+  if (req.url && req.url.startsWith('/session')) {
+    const parts = req.url.split('/');
+    // /session/create
+    if (req.method === 'POST' && parts.length === 3 && parts[2] === 'create') {
+        try {
+            const options = await parseBody(req);
+            const sessionId = await createSession(options);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ sessionId }));
+        } catch (error) {
+            console.error('Session create error:', error.message);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: error.message }));
+        }
+        return;
+    }
+
+    const sessionId = parts[2];
+
+    // /session/{sessionId}/action
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'action') {
+         try {
+             const action = await parseBody(req);
+             const result = await executeAction(sessionId, action);
+             res.writeHead(200, { 'Content-Type': 'application/json' });
+             res.end(JSON.stringify(result));
+         } catch (error) {
+             console.error('Session action error:', error.message);
+             res.writeHead(500, { 'Content-Type': 'application/json' });
+             res.end(JSON.stringify({ error: error.message }));
+         }
+         return;
+    }
+
+    // /session/{sessionId}/state - GET with query params or POST with body
+    if (parts.length === 4 && parts[3].startsWith('state')) {
+         try {
+             let options = {};
+             if (req.method === 'POST') {
+                 options = await parseBody(req);
+             } else {
+                 // Parse query string for GET requests
+                 const urlParts = req.url.split('?');
+                 if (urlParts[1]) {
+                     const params = new URLSearchParams(urlParts[1]);
+                     options.includeHtml = params.get('html') === 'true' || params.get('includeHtml') === 'true';
+                     options.includeSnapshot = params.get('snapshot') !== 'false' && params.get('includeSnapshot') !== 'false';
+                 }
+             }
+             const result = await getSessionState(sessionId, options);
+             res.writeHead(200, { 'Content-Type': 'application/json' });
+             res.end(JSON.stringify(result));
+         } catch (error) {
+             console.error('Session state error:', error.message);
+             res.writeHead(500, { 'Content-Type': 'application/json' });
+             res.end(JSON.stringify({ error: error.message }));
+         }
+         return;
+    }
+
+    // /session/{sessionId}/commit (end session and return recording)
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'commit') {
+         try {
+             const session = sessions.get(sessionId);
+             if (!session) throw new Error('Session not found');
+
+             const recording = {
+                 title: 'LLM Agent Session',
+                 steps: session.steps
+             };
+
+             await closeSession(sessionId);
+
+             res.writeHead(200, { 'Content-Type': 'application/json' });
+             res.end(JSON.stringify({ recording }));
+         } catch (error) {
+             console.error('Session commit error:', error.message);
+             res.writeHead(500, { 'Content-Type': 'application/json' });
+             res.end(JSON.stringify({ error: error.message }));
+         }
+         return;
+    }
+
+    // /session/{sessionId} (DELETE)
+    if (req.method === 'DELETE' && parts.length === 3) {
+        try {
+            await closeSession(sessionId);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true }));
+        } catch (error) {
+            console.error('Session close error:', error.message);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: error.message }));
+        }
+        return;
+    }
   }
 
   if (req.method === 'GET' && req.url === '/health') {

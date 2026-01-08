@@ -953,6 +953,180 @@ Command-line interface for the web crawler for agents with service fallbacks.
         (printf "Note: Use 'ar-crawl sample ~a' to view sample HTML content.~n" db-file)
         (printf "      Use 'ar-crawl extract ~a --fields \"{...}\"' to extract data.~n~n" db-file))))
 
+;; @function{cmd-session}
+;; @description{Start an interactive session for LLM agents to drive Playwright}
+;; Input format: JSON objects matching Playwright API actions
+;; Example: {"type": "goto", "url": "https://example.com"}
+;; Example: {"type": "click", "selector": "#button"}
+;; Special commands: state, commit, exit
+(define (cmd-session #:verbose [verbose #f])
+
+  ;; Start playwright service
+  (start-playwright-service #:verbose verbose)
+
+  (when verbose
+    (printf "Starting interactive session...~n"))
+
+  (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+
+  ;; Create session
+  (define session-id
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to create session: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (post-pure-port
+                    (string->url (string-append base-url "/session/create"))
+                    (string->bytes/utf-8 "{}")
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+      (hash-ref data 'sessionId)))
+
+  ;; Output session info as JSON for LLM consumption
+  (displayln (jsexpr->string (hash 'sessionId session-id 'status "ready")))
+  (flush-output)
+
+  ;; REPL loop - accepts JSON actions
+  (let loop ()
+    (define input (read-line))
+
+    (unless (eof-object? input)
+      (define cmd-str (string-trim input))
+
+      (cond
+        [(string=? cmd-str "") (loop)]
+
+        ;; Exit without saving
+        [(member cmd-str '("exit" "quit"))
+         (with-handlers ([exn:fail? void])
+           (define resp (delete-pure-port
+                         (string->url (format "~a/session/~a" base-url session-id))))
+           (close-input-port resp))
+         (displayln (jsexpr->string (hash 'status "closed")))
+         (void)]
+
+        ;; Get current state (concise accessibility snapshot)
+        [(or (string=? cmd-str "state") (string-prefix? cmd-str "state "))
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (loop))])
+           ;; Parse state options: state [--html]
+           (define include-html (string-contains? cmd-str "--html"))
+           (define state-url (format "~a/session/~a/state~a"
+                                     base-url session-id
+                                     (if include-html "?html=true" "")))
+           (define resp (get-pure-port (string->url state-url)))
+           (displayln (port->string resp))
+           (close-input-port resp)
+           (flush-output)
+           (loop))]
+
+        ;; Commit session and output recording
+        [(or (string=? cmd-str "commit") (string-prefix? cmd-str "commit "))
+         (define parts (string-split cmd-str))
+         (define output-file (if (> (length parts) 1) (list-ref parts 1) #f))
+
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (void))])
+           (define resp (post-pure-port
+                         (string->url (format "~a/session/~a/commit" base-url session-id))
+                         #""
+                         (list "Content-Type: application/json")))
+           (define data (string->jsexpr (port->string resp)))
+           (close-input-port resp)
+
+           (define recording (hash-ref data 'recording (hash)))
+
+           (if output-file
+               (begin
+                 (call-with-output-file output-file
+                   (lambda (port)
+                     (write-json recording port #:indent 2))
+                   #:exists 'replace)
+                 (displayln (jsexpr->string (hash 'status "committed" 'file output-file))))
+               (displayln (jsexpr->string (hash 'status "committed" 'recording recording)))))
+         (void)]
+
+        ;; JSON action - parse and execute
+        [(string-prefix? cmd-str "{")
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'success #f 'error (exn-message e))))
+                                      (flush-output)
+                                      (loop))])
+           (define action (string->jsexpr cmd-str))
+           (define resp (post-pure-port
+                         (string->url (format "~a/session/~a/action" base-url session-id))
+                         (string->bytes/utf-8 cmd-str)
+                         (list "Content-Type: application/json")))
+           (displayln (port->string resp))
+           (close-input-port resp)
+           (flush-output)
+           (loop))]
+
+        ;; Help (for debugging)
+        [(string=? cmd-str "help")
+         (displayln (jsexpr->string
+                     (hash 'commands
+                           (hash 'actions "Send JSON objects matching Playwright API, e.g. {\"type\": \"goto\", \"url\": \"...\"}"
+                                 'state "Get current page state (accessibility snapshot)"
+                                 'commit "End session and return recording JSON"
+                                 'exit "Close session without saving")
+                           'actionTypes '("goto" "click" "fill" "type" "hover" "press" "scroll"
+                                           "waitForSelector" "evaluate" "screenshot" "goBack"
+                                           "goForward" "reload" "selectOption" "check" "uncheck"
+                                           "focus" "dblclick" "setViewport" "customStep"))))
+         (loop)]
+
+        ;; Unknown command
+        [else
+         (displayln (jsexpr->string (hash 'error "Unknown command. Send JSON action or use: state, commit, exit, help")))
+         (flush-output)
+         (loop)]))))
+
+;; @function{parse-session-command}
+;; @description{Parse a command string into a JSON action object}
+(define (parse-session-command cmd-str)
+  (define parts (string-split cmd-str))
+  (define cmd (car parts))
+  (define args (cdr parts))
+
+  (case (string->symbol cmd)
+    [(navigate)
+     (if (empty? args)
+         #f
+         (hash 'type "navigate" 'url (car args)))]
+
+    [(click)
+     (if (empty? args)
+         #f
+         (hash 'type "click" 'selectors (list (list (string-join args " ")))))]
+
+    [(type fill)
+     (if (< (length args) 2)
+         #f
+         (let ([selector (car args)]
+               [text (string-join (cdr args) " ")])
+           (hash 'type "fill" 'selectors (list (list selector)) 'value text)))]
+
+    [(scroll)
+     (if (empty? args)
+         (hash 'type "scroll" 'x 0 'y 0)
+         (hash 'type "scroll"
+               'x (if (> (length args) 0) (string->number (car args)) 0)
+               'y (if (> (length args) 1) (string->number (cadr args)) 0)))]
+
+    [(think)
+     (hash 'type "customStep"
+           'name "agent_thought"
+           'parameters (hash 'note (string-join args " ")))]
+
+    [(screenshot)
+     (hash 'type "screenshot" 'fullPage #t)]
+
+    [else #f]))
+
 ;; @function{cmd-replay}
 ;; @description{Replay a Chrome DevTools Recorder JSON recording}
 (define (cmd-replay recording-file
@@ -1683,6 +1857,18 @@ Command-line interface for the web crawler for agents with service fallbacks.
    #:args ()
    (void)))
 
+;; @function{parse-session-args}
+;; @description{Parse session command arguments}
+(define (parse-session-args args)
+  (command-line
+   #:program "ar-crawl session"
+   #:argv args
+   #:once-each
+   [("-v" "--verbose") "Enable verbose output"
+    (verbose-mode #t)]
+   #:args ()
+   (void)))
+
 ;; @function{parse-crawl-args}
 ;; @description{Parse crawl command arguments after the URL}
 (define (parse-crawl-args args)
@@ -2017,6 +2203,11 @@ Command-line interface for the web crawler for agents with service fallbacks.
                       #:output (output-file-param)
                       #:format (output-format-param)))]
 
+       [(session)
+        (parse-session-args post-cmd-args)
+        (with-playwright-cleanup
+          (cmd-session #:verbose (verbose-mode)))]
+
        [(help)
         (if (empty? post-cmd-args)
             (show-main-help)
@@ -2147,7 +2338,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
 ;; Known commands for typo suggestions
 (define KNOWN-COMMANDS
-  '("crawl" "crawl-site" "probe" "replay" "sample" "extract" "stats"
+  '("crawl" "crawl-site" "probe" "replay" "session" "sample" "extract" "stats"
     "health" "test" "config" "services" "monitor" "help" "version"))
 
 ;; @function{levenshtein-distance}
@@ -2212,6 +2403,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  crawl-site <url>    Crawl an entire website following links~n")
   (printf "  probe <url>         Measure page load metrics to inform scraping params~n")
   (printf "  replay <file>       Replay a Chrome DevTools Recorder JSON recording~n")
+  (printf "  session             Interactive Playwright session for LLM agents~n")
   (printf "  sample <file>       Show sample HTML from crawl results (to figure out XPaths)~n")
   (printf "  extract <file>      Extract structured data from crawl results using XPath~n")
   (printf "  stats <file.db>     Show statistics about crawl database~n")
@@ -2739,6 +2931,107 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  This command uses Playwright and requires the playwright service.~n")
   (printf "  It will be started automatically if not running.~n~n"))
 
+;; @function{show-session-help}
+;; @description{Show help for session command}
+(define (show-session-help)
+  (printf "~nSESSION - Interactive Playwright session for LLM agents~n")
+  (printf "========================================================~n~n")
+  (printf "Start an interactive browser session that accepts Playwright commands as JSON.~n")
+  (printf "Designed for LLM agents to drive browser automation with step recording.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl session [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -v, --verbose       Show debug output~n~n")
+
+  (printf "COMMANDS (stdin)~n")
+  (printf "  {\"type\": \"...\", ...}   Execute Playwright action (JSON)~n")
+  (printf "  state                   Get current page state (accessibility snapshot)~n")
+  (printf "  state --html            Get state including raw HTML~n")
+  (printf "  commit [file]           End session, output/save recording~n")
+  (printf "  exit                    Close session without saving~n")
+  (printf "  help                    Show available actions~n~n")
+
+  (printf "PLAYWRIGHT ACTIONS (JSON format)~n")
+  (printf "  Navigation:~n")
+  (printf "    {\"type\": \"goto\", \"url\": \"https://...\"}~n")
+  (printf "    {\"type\": \"goBack\"}~n")
+  (printf "    {\"type\": \"goForward\"}~n")
+  (printf "    {\"type\": \"reload\"}~n~n")
+
+  (printf "  Interaction:~n")
+  (printf "    {\"type\": \"click\", \"selector\": \"#button\"}~n")
+  (printf "    {\"type\": \"dblclick\", \"selector\": \".item\"}~n")
+  (printf "    {\"type\": \"fill\", \"selector\": \"input[name=q]\", \"value\": \"search\"}~n")
+  (printf "    {\"type\": \"type\", \"selector\": \"#input\", \"text\": \"hello\", \"delay\": 50}~n")
+  (printf "    {\"type\": \"selectOption\", \"selector\": \"select\", \"value\": \"opt1\"}~n")
+  (printf "    {\"type\": \"check\", \"selector\": \"#checkbox\"}~n")
+  (printf "    {\"type\": \"uncheck\", \"selector\": \"#checkbox\"}~n")
+  (printf "    {\"type\": \"hover\", \"selector\": \".menu\"}~n")
+  (printf "    {\"type\": \"focus\", \"selector\": \"#input\"}~n~n")
+
+  (printf "  Keyboard:~n")
+  (printf "    {\"type\": \"press\", \"key\": \"Enter\"}~n")
+  (printf "    {\"type\": \"press\", \"selector\": \"#input\", \"key\": \"Tab\"}~n")
+  (printf "    {\"type\": \"keyDown\", \"key\": \"Shift\"}~n")
+  (printf "    {\"type\": \"keyUp\", \"key\": \"Shift\"}~n~n")
+
+  (printf "  Scroll:~n")
+  (printf "    {\"type\": \"scroll\", \"x\": 0, \"y\": 500}~n")
+  (printf "    {\"type\": \"scrollIntoView\", \"selector\": \"#footer\"}~n~n")
+
+  (printf "  Wait:~n")
+  (printf "    {\"type\": \"waitForSelector\", \"selector\": \".loaded\"}~n")
+  (printf "    {\"type\": \"waitForNavigation\"}~n")
+  (printf "    {\"type\": \"waitForLoadState\", \"state\": \"networkidle\"}~n")
+  (printf "    {\"type\": \"waitForTimeout\", \"timeout\": 1000}~n~n")
+
+  (printf "  Capture:~n")
+  (printf "    {\"type\": \"screenshot\"}~n")
+  (printf "    {\"type\": \"screenshot\", \"selector\": \"#element\", \"fullPage\": true}~n")
+  (printf "    {\"type\": \"evaluate\", \"expression\": \"document.title\"}~n~n")
+
+  (printf "  Viewport:~n")
+  (printf "    {\"type\": \"setViewport\", \"width\": 1280, \"height\": 720}~n~n")
+
+  (printf "  Custom (for recording notes):~n")
+  (printf "    {\"type\": \"customStep\", \"name\": \"thought\", \"parameters\": {\"note\": \"...\"}}}~n~n")
+
+  (printf "OUTPUT FORMAT~n")
+  (printf "  All output is JSON, one object per line:~n")
+  (printf "  - Session start: {\"sessionId\": \"...\", \"status\": \"ready\"}~n")
+  (printf "  - Action result: {\"success\": true, \"url\": \"...\", \"title\": \"...\"}~n")
+  (printf "  - State: {\"url\": \"...\", \"title\": \"...\", \"snapshot\": {...}}~n")
+  (printf "  - Commit: {\"status\": \"committed\", \"recording\": {...}}~n")
+  (printf "  - Error: {\"success\": false, \"error\": \"...\"}~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Start session and navigate~n")
+  (printf "  $ ar-crawl session~n")
+  (printf "  {\"sessionId\":\"abc-123\",\"status\":\"ready\"}~n")
+  (printf "  {\"type\": \"goto\", \"url\": \"https://example.com\"}~n")
+  (printf "  {\"success\":true,\"url\":\"https://example.com/\",\"title\":\"Example\"}~n~n")
+
+  (printf "  # Get page state~n")
+  (printf "  state~n")
+  (printf "  {\"url\":\"...\",\"title\":\"...\",\"snapshot\":{\"tree\":\"...\",\"elements\":[...]}}~n~n")
+
+  (printf "  # Save recording~n")
+  (printf "  commit flow.json~n")
+  (printf "  {\"status\":\"committed\",\"file\":\"flow.json\"}~n~n")
+
+  (printf "RECORDING FORMAT~n")
+  (printf "  Sessions produce Chrome DevTools Recorder compatible JSON:~n")
+  (printf "  {\"title\": \"LLM Agent Session\", \"steps\": [...]}~n~n")
+  (printf "  Use 'ar-crawl replay' to replay recordings.~n~n")
+
+  (printf "NOTES~n")
+  (printf "  - Selectors: CSS, XPath (//), text=, aria/, [data-testid=\"\"]~n")
+  (printf "  - All actions support optional \"timeout\" parameter (ms)~n")
+  (printf "  - This command uses Playwright and requires the playwright service.~n")
+  (printf "  - Service starts automatically if not running.~n~n"))
+
 ;; @function{show-command-help}
 ;; @description{Show help for a specific command}
 (define (show-command-help command)
@@ -2747,6 +3040,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(crawl-site) (show-crawl-site-help)]
     [(probe) (show-probe-help)]
     [(replay) (show-replay-help)]
+    [(session) (show-session-help)]
     [(extract) (show-extract-help)]
     [(sample) (show-sample-help)]
     [(health) (show-health-help)]
@@ -2756,7 +3050,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(monitor) (show-monitor-help)]
     [else
      (printf "Unknown command: ~a~n~n" command)
-     (printf "Available commands: crawl, crawl-site, probe, replay, extract, sample, health, test, config, services, monitor~n")
+     (printf "Available commands: crawl, crawl-site, probe, replay, session, extract, sample, health, test, config, services, monitor~n")
      (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters
