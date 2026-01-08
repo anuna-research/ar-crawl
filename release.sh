@@ -1,8 +1,9 @@
 #!/bin/bash
 set -e
 
-# Get the latest tag
-latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+# Get the latest tag (sorted by version number)
+latest_tag=$(git tag --sort=-v:refname | head -1)
+latest_tag=${latest_tag:-v0.0.0}
 
 # Parse version components
 version=${latest_tag#v}
