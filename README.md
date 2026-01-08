@@ -883,6 +883,125 @@ jq -e '.data[0].url | contains("/dashboard")' result.json
 jq '.recording.stepResults | map(select(.success)) | length' result.json
 ```
 
+## Interactive Session (LLM Agent Mode)
+
+The `session` command starts an interactive Playwright session designed for LLM agents to drive browser automation in real-time. All input/output is JSON for easy agent integration.
+
+### Basic Usage
+
+```bash
+# Start a session
+ar-crawl session
+
+# Session outputs JSON, accepts JSON commands via stdin
+{"sessionId":"abc-123","status":"ready"}
+{"type": "goto", "url": "https://example.com"}
+{"success":true,"url":"https://example.com/","title":"Example Domain"}
+state
+{"url":"https://example.com/","title":"Example Domain"}
+commit
+{"status":"committed","recording":{...}}
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `{"type": "goto", "url": "..."}` | Navigate to URL |
+| `{"type": "click", "selector": "..."}` | Click element |
+| `{"type": "fill", "selector": "...", "value": "..."}` | Fill input field |
+| `{"type": "type", "selector": "...", "text": "..."}` | Type text (with key events) |
+| `{"type": "hover", "selector": "..."}` | Hover over element |
+| `{"type": "press", "key": "Enter"}` | Press keyboard key |
+| `{"type": "screenshot"}` | Take screenshot (base64) |
+| `{"type": "evaluate", "expression": "..."}` | Run JavaScript |
+| `state` | Get current page state |
+| `commit [file]` | End session, save recording |
+| `exit` | Close without saving |
+
+### State Filtering (Reduce Context Window)
+
+The `state` command supports filtering to minimize context window usage:
+
+```bash
+# Minimal state (default) - just URL and title
+state
+{"url":"...","title":"..."}
+
+# Clickable elements only
+state --actions
+{"url":"...","title":"...","actions":[{"text":"Login","href":"..."},...]]}
+
+# Form inputs only
+state --forms
+{"url":"...","title":"...","inputs":[{"type":"text","name":"email",...},...]]}
+
+# XPath extraction (same syntax as extract command)
+state --fields '{"title": "//h1", "links": "//a/@href"}'
+{"url":"...","title":"...","results":{"title":"Page Title","links":["...",...]}}
+
+# Extract repeated items (e.g., table rows, product cards)
+state --parent "//tr[@class='item']" --fields '{"name": ".//td[1]", "price": ".//td[2]"}'
+{"url":"...","title":"...","results":[{"name":"Item 1","price":"$10"},...]]}
+```
+
+### Example: LLM Agent Workflow
+
+```bash
+# Agent starts session
+$ ar-crawl session
+{"sessionId":"...","status":"ready"}
+
+# Agent navigates
+{"type": "goto", "url": "https://news.ycombinator.com"}
+{"success":true,"url":"https://news.ycombinator.com/","title":"Hacker News"}
+
+# Agent extracts just what it needs (30 titles, minimal tokens)
+state --fields '{"titles": "//span[@class=\"titleline\"]/a"}'
+{"url":"...","results":{"titles":["Story 1","Story 2",...]}}
+
+# Agent clicks on interesting story
+{"type": "click", "selector": "span.titleline > a"}
+{"success":true,"url":"https://...","title":"..."}
+
+# Agent extracts article content
+state --fields '{"content": "//article//p"}'
+
+# Agent saves recording for replay later
+commit my-research.json
+{"status":"committed","file":"my-research.json"}
+```
+
+### Recording Format
+
+Sessions produce Chrome DevTools Recorder compatible JSON with UTC timestamps:
+
+```json
+{
+  "title": "LLM Agent Session",
+  "steps": [
+    {"type": "goto", "url": "https://...", "timestamp": "2026-01-08T01:24:38.230Z"},
+    {"type": "click", "selector": "...", "timestamp": "2026-01-08T01:24:39.100Z"}
+  ]
+}
+```
+
+Recordings can be replayed with `ar-crawl replay my-session.json`.
+
+### All Supported Actions
+
+The session supports the full Playwright API:
+
+**Navigation:** `goto`, `goBack`, `goForward`, `reload`
+
+**Interaction:** `click`, `dblclick`, `fill`, `type`, `hover`, `focus`, `press`, `check`, `uncheck`, `selectOption`
+
+**Waiting:** `waitForSelector`, `waitForNavigation`, `waitForLoadState`, `waitForTimeout`
+
+**Capture:** `screenshot`, `evaluate`
+
+**Viewport:** `setViewport`, `emulateMedia`
+
 ## Data Extraction
 
 AR-Crawl provides a two-step workflow for structured data extraction: first crawl pages, then extract data using XPath expressions.
