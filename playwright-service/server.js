@@ -267,6 +267,29 @@ async function replayRecording(options) {
             stepResult.expression = step.expression;
             break;
 
+          case 'emulateNetworkConditions':
+            const client = await page.context().newCDPSession(page);
+            await client.send('Network.emulateNetworkConditions', {
+              offline: step.offline || false,
+              latency: step.latency || 0,
+              downloadThroughput: step.download !== undefined ? step.download : -1,
+              uploadThroughput: step.upload !== undefined ? step.upload : -1
+            });
+            break;
+
+          case 'setGeolocation':
+            await context.setGeolocation({
+              latitude: step.latitude,
+              longitude: step.longitude,
+              accuracy: step.accuracy
+            });
+            break;
+
+          case 'customStep':
+            log(`Skipping custom step: ${step.name}`);
+            stepResult.warning = `Skipped custom step: ${step.name}`;
+            break;
+
           case 'close':
             // Skip close step - we handle cleanup ourselves
             break;
