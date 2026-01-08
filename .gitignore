@@ -26,6 +26,9 @@ Thumbs.db
 # Editor files
 .vscode/
 .idea/
+
+# Node
+node_modules/
 *.swp
 *.swo
 *~
@@ -41,6 +44,11 @@ compiled/
 
 # Test artifacts
 test-output/
+coverage/
+*.db
+
+# Runtime files
+*.pid
 
 # Distribution artifacts
 dist/
