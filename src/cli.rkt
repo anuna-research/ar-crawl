@@ -1006,21 +1006,78 @@ Command-line interface for the web crawler for agents with service fallbacks.
          (displayln (jsexpr->string (hash 'status "closed")))
          (void)]
 
-        ;; Get current state (concise accessibility snapshot)
+        ;; Get current state with filtering options (consistent with extract command)
+        ;; state                                      -> minimal (just url/title)
+        ;; state --actions                            -> clickable elements
+        ;; state --forms                              -> form inputs
+        ;; state --fields '{"name": "//h1"}'          -> extract fields by XPath
+        ;; state --parent "//div" --fields '{"x":"./a"}' -> extract repeated items
+        ;; state --html                               -> include raw HTML
         [(or (string=? cmd-str "state") (string-prefix? cmd-str "state "))
          (with-handlers ([exn:fail? (lambda (e)
                                       (displayln (jsexpr->string (hash 'error (exn-message e))))
                                       (loop))])
-           ;; Parse state options: state [--html]
-           (define include-html (string-contains? cmd-str "--html"))
-           (define state-url (format "~a/session/~a/state~a"
-                                     base-url session-id
-                                     (if include-html "?html=true" "")))
-           (define resp (get-pure-port (string->url state-url)))
-           (displayln (port->string resp))
-           (close-input-port resp)
-           (flush-output)
-           (loop))]
+           ;; Parse --fields and --parent options (consistent with extract command)
+           (define fields-match (regexp-match #px"--fields\\s+'([^']+)'" cmd-str))
+           (define parent-match (regexp-match #px"--parent\\s+\"([^\"]+)\"" cmd-str))
+
+           (cond
+             ;; XPath extraction with --fields (and optional --parent)
+             [fields-match
+              (define fields-json (cadr fields-match))
+              (define parent-xpath (and parent-match (cadr parent-match)))
+
+              ;; Fetch HTML from session
+              (define state-url (format "~a/session/~a/state?html=true&view=minimal" base-url session-id))
+              (define resp (get-pure-port (string->url state-url)))
+              (define data (string->jsexpr (port->string resp)))
+              (close-input-port resp)
+
+              (define html (hash-ref data 'html ""))
+              (define url (hash-ref data 'url ""))
+              (define title (hash-ref data 'title ""))
+
+              ;; Parse fields JSON
+              (define field-xpaths
+                (with-handlers ([exn:fail? (lambda (e)
+                                             (displayln (jsexpr->string (hash 'error (format "Invalid JSON: ~a" (exn-message e)))))
+                                             #f)])
+                  (string->jsexpr fields-json)))
+
+              (when field-xpaths
+                (define results
+                  (if parent-xpath
+                      ;; Extract repeated items using parent + fields
+                      (extract-items html parent-xpath field-xpaths)
+                      ;; Extract single fields
+                      (extract-by-xpaths html field-xpaths)))
+
+                (displayln (jsexpr->string
+                            (hash 'url url
+                                  'title title
+                                  'results results)))
+                (flush-output))
+              (loop)]
+
+             ;; Server-side filtering (--actions, --forms, etc.)
+             [else
+              (define params '())
+              (when (string-contains? cmd-str "--actions")
+                (set! params (cons "view=actions" params)))
+              (when (string-contains? cmd-str "--forms")
+                (set! params (cons "view=forms" params)))
+              (when (string-contains? cmd-str "--full")
+                (set! params (cons "view=full" params)))
+              (when (string-contains? cmd-str "--html")
+                (set! params (cons "html=true" params)))
+
+              (define query-string (if (empty? params) "" (string-append "?" (string-join params "&"))))
+              (define state-url (format "~a/session/~a/state~a" base-url session-id query-string))
+              (define resp (get-pure-port (string->url state-url)))
+              (displayln (port->string resp))
+              (close-input-port resp)
+              (flush-output)
+              (loop)]))]
 
         ;; Commit session and output recording
         [(or (string=? cmd-str "commit") (string-prefix? cmd-str "commit "))
@@ -1069,14 +1126,22 @@ Command-line interface for the web crawler for agents with service fallbacks.
         [(string=? cmd-str "help")
          (displayln (jsexpr->string
                      (hash 'commands
-                           (hash 'actions "Send JSON objects matching Playwright API, e.g. {\"type\": \"goto\", \"url\": \"...\"}"
-                                 'state "Get current page state (accessibility snapshot)"
+                           (hash 'actions "Send JSON objects matching Playwright API"
+                                 'state "Get page state: state [--actions|--forms|--fields '...']"
                                  'commit "End session and return recording JSON"
                                  'exit "Close session without saving")
+                           'stateOptions (hash
+                                          '--actions "clickable elements only"
+                                          '--forms "form inputs only"
+                                          '--fields "XPath extraction (same as extract cmd)"
+                                          '--parent "parent XPath for repeated items")
+                           'examples '("state --fields '{\"title\": \"//h1\"}'"
+                                       "state --fields '{\"links\": \"//a/@href\"}'"
+                                       "state --parent \"//tr\" --fields '{\"name\": \".//td[1]\", \"price\": \".//td[2]\"}'")
                            'actionTypes '("goto" "click" "fill" "type" "hover" "press" "scroll"
-                                           "waitForSelector" "evaluate" "screenshot" "goBack"
-                                           "goForward" "reload" "selectOption" "check" "uncheck"
-                                           "focus" "dblclick" "setViewport" "customStep"))))
+                                          "waitForSelector" "evaluate" "screenshot" "goBack"
+                                          "goForward" "reload" "selectOption" "check" "uncheck"
+                                          "focus" "dblclick" "setViewport" "customStep"))))
          (loop)]
 
         ;; Unknown command
