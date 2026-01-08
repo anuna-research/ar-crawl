@@ -24,6 +24,68 @@ function log(...args) {
   if (VERBOSE) console.log(...args);
 }
 
+// Convert session step to Chrome DevTools Recorder format
+function toDevToolsFormat(action) {
+  const step = { type: action.type };
+
+  // Map action types to DevTools Recorder types
+  const typeMap = {
+    'goto': 'navigate',
+    'dblclick': 'doubleClick',
+    'fill': 'change',
+    'type': 'keySequence'
+  };
+
+  if (typeMap[action.type]) {
+    step.type = typeMap[action.type];
+  }
+
+  // Copy URL for navigation
+  if (action.url) {
+    step.url = action.url;
+  }
+
+  // Convert selector to selectors array (DevTools format)
+  if (action.selector) {
+    step.selectors = [[action.selector]];
+  }
+
+  // Copy value for input actions
+  if (action.value !== undefined) {
+    step.value = action.value;
+  }
+
+  // Copy text for type actions
+  if (action.text) {
+    step.text = action.text;
+  }
+
+  // Copy key for keyboard actions
+  if (action.key) {
+    step.key = action.key;
+  }
+
+  // Copy expression for evaluate
+  if (action.expression) {
+    step.expression = action.expression;
+  }
+
+  // Add timestamp
+  step.timestamp = action.timestamp || new Date().toISOString();
+
+  // Copy any error
+  if (action.error) {
+    step.error = action.error;
+  }
+
+  // Copy title/annotation for LLM agent reasoning
+  if (action.title) {
+    step.title = action.title;
+  }
+
+  return step;
+}
+
 async function initBrowser() {
   if (!browser) {
     browser = await chromium.launch({
@@ -607,8 +669,8 @@ async function executeAction(sessionId, action) {
     stepRecord.error = error.message;
     throw error;
   } finally {
-    // Record step regardless of success/failure (fail steps are important context)
-    session.steps.push(stepRecord);
+    // Record step in Chrome DevTools Recorder format (for compatibility)
+    session.steps.push(toDevToolsFormat(stepRecord));
   }
 
   // Get current state
@@ -987,12 +1049,14 @@ async function replayRecording(options) {
             break;
 
           case 'navigate':
+          case 'goto':
             await page.goto(step.url, { waitUntil: 'networkidle', timeout });
             stepResult.url = step.url;
             break;
 
           case 'click':
-            const clickSelector = resolveSelector(step.selectors);
+            // Support both DevTools Recorder format (selectors array) and session format (selector string)
+            const clickSelector = step.selector || resolveSelector(step.selectors);
             await page.click(clickSelector, {
               button: step.button || 'left',
               clickCount: step.clickCount || 1,
@@ -1002,16 +1066,25 @@ async function replayRecording(options) {
             break;
 
           case 'doubleClick':
-            const dblClickSelector = resolveSelector(step.selectors);
+          case 'dblclick':
+            const dblClickSelector = step.selector || resolveSelector(step.selectors);
             await page.dblclick(dblClickSelector, { timeout });
             stepResult.selector = dblClickSelector;
             break;
 
           case 'change':
-            const changeSelector = resolveSelector(step.selectors);
+          case 'fill':
+            const changeSelector = step.selector || resolveSelector(step.selectors);
             await page.fill(changeSelector, step.value, { timeout });
             stepResult.selector = changeSelector;
             stepResult.value = step.value;
+            break;
+
+          case 'type':
+            const typeSelector = step.selector || resolveSelector(step.selectors);
+            await page.type(typeSelector, step.text, { timeout });
+            stepResult.selector = typeSelector;
+            stepResult.text = step.text;
             break;
 
           case 'keyDown':
@@ -1039,9 +1112,36 @@ async function replayRecording(options) {
             break;
 
           case 'hover':
-            const hoverSelector = resolveSelector(step.selectors);
+            const hoverSelector = step.selector || resolveSelector(step.selectors);
             await page.hover(hoverSelector, { timeout });
             stepResult.selector = hoverSelector;
+            break;
+
+          case 'press':
+            await page.keyboard.press(step.key);
+            stepResult.key = step.key;
+            break;
+
+          case 'screenshot':
+            // Skip screenshot during replay - just record it happened
+            stepResult.skipped = true;
+            break;
+
+          case 'evaluate':
+            const evalResult = await page.evaluate(step.expression);
+            stepResult.result = evalResult;
+            break;
+
+          case 'goBack':
+            await page.goBack({ timeout });
+            break;
+
+          case 'goForward':
+            await page.goForward({ timeout });
+            break;
+
+          case 'reload':
+            await page.reload({ timeout });
             break;
 
           case 'waitForElement':
