@@ -40,6 +40,26 @@ Command-line interface for the web crawler for agents with service fallbacks.
 (define playwright-stderr #f)
 (define PLAYWRIGHT_SERVICE_PORT (or (getenv "PLAYWRIGHT_SERVICE_PORT") "3033"))
 
+;; @function{resolve-symlink}
+;; @description{Resolve symlinks to get the real path of a file}
+(define (resolve-symlink path-str)
+  ;; Try to resolve symlinks using realpath command
+  ;; Try common locations for realpath across different systems
+  (define realpath-paths '("/bin/realpath" "/usr/bin/realpath"))
+  (define realpath-cmd
+    (or (findf file-exists? realpath-paths)
+        (car realpath-paths)))
+  (with-handlers ([exn:fail? (lambda (e) #f)])
+    (define-values (proc stdout stdin stderr)
+      (subprocess #f #f #f realpath-cmd path-str))
+    (define output (port->string stdout))
+    (close-input-port stdout)
+    (close-output-port stdin)
+    (close-input-port stderr)
+    (subprocess-wait proc)
+    (define trimmed (string-trim output))
+    (and (non-empty-string? trimmed) (file-exists? trimmed) trimmed)))
+
 ;; @function{get-playwright-service-dir}
 ;; @description{Get the playwright-service directory path}
 (define (get-playwright-service-dir)
@@ -48,23 +68,45 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (cond
     [(and env-dir (directory-exists? env-dir)) env-dir]
     [else
-     ;; Try relative to executable
-     ;; Use 'exec-file for compiled binaries (gives actual runtime path)
-     ;; Fall back to 'run-file for running from source
-     (define exec-path (find-system-path 'exec-file))
-     (define script-dir (path-only (path->complete-path exec-path)))
+     ;; Get executable path - try both exec-file and run-file
+     (define exec-file-path (path->string (find-system-path 'exec-file)))
+     (define run-file-path
+       (with-handlers ([exn:fail? (lambda (e) #f)])
+         (path->string (find-system-path 'run-file))))
+
+     ;; Try to resolve symlinks to get the actual binary location
+     (define resolved-path (resolve-symlink exec-file-path))
+
+     ;; Build candidates from multiple possible executable locations
+     (define exec-paths
+       (filter values (list resolved-path exec-file-path run-file-path)))
+
+     ;; Build all candidate directories from all possible exec paths
+     (define home-dir (getenv "HOME"))
      (define candidates
-       (list
-        ;; For installed binary at ~/.local/bin: check ~/.local/lib/ar-crawl/playwright-service
-        (simplify-path (build-path script-dir ".." "lib" "ar-crawl" "playwright-service"))
-        ;; For dist/ar-crawl-dist/bin/ar-crawl: check ../lib/playwright-service
-        (simplify-path (build-path script-dir ".." "lib" "playwright-service"))
-        ;; For dist/ar-crawl binary: go up twice to reach repo root
-        (simplify-path (build-path script-dir ".." ".." "playwright-service"))
-        ;; For racket src/cli.rkt: go up once
-        (simplify-path (build-path script-dir ".." "playwright-service"))
-        ;; Current working directory
-        (simplify-path (build-path (current-directory) "playwright-service"))))
+       (append
+        ;; Standard install locations (check these first as universal fallbacks)
+        (if home-dir
+            (list
+             ;; Standard install location from install.sh
+             (simplify-path (build-path home-dir ".local" "lib" "ar-crawl" "playwright-service")))
+            '())
+        ;; Locations relative to executable paths
+        (apply append
+               (for/list ([exec-path (in-list exec-paths)])
+                 (define script-dir (path-only (path->complete-path exec-path)))
+                 (list
+                  ;; For installed binary at ~/.local/bin: check ~/.local/lib/ar-crawl/playwright-service
+                  (simplify-path (build-path script-dir ".." "lib" "ar-crawl" "playwright-service"))
+                  ;; For dist/ar-crawl-dist/bin/ar-crawl: check ../lib/playwright-service
+                  (simplify-path (build-path script-dir ".." "lib" "playwright-service"))
+                  ;; For dist/ar-crawl binary: go up twice to reach repo root
+                  (simplify-path (build-path script-dir ".." ".." "playwright-service"))
+                  ;; For racket src/cli.rkt: go up once
+                  (simplify-path (build-path script-dir ".." "playwright-service")))))
+        ;; Current working directory fallback
+        (list (simplify-path (build-path (current-directory) "playwright-service")))))
+
      (or (findf directory-exists? candidates)
          ;; Default to first candidate (will fail with helpful error)
          (car candidates))]))
