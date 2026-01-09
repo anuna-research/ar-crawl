@@ -49,7 +49,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(and env-dir (directory-exists? env-dir)) env-dir]
     [else
      ;; Try relative to executable
-     (define script-dir (path-only (path->complete-path (find-system-path 'run-file))))
+     ;; Use 'exec-file for compiled binaries (gives actual runtime path)
+     ;; Fall back to 'run-file for running from source
+     (define exec-path (find-system-path 'exec-file))
+     (define script-dir (path-only (path->complete-path exec-path)))
      (define candidates
        (list
         ;; For installed binary at ~/.local/bin: check ~/.local/lib/ar-crawl/playwright-service
