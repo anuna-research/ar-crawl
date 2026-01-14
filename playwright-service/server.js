@@ -248,41 +248,52 @@ async function initBrowser() {
 async function discoverAndroidDevices(options = {}) {
   const { host, port } = options;
 
-  try {
-    const devices = await _android.devices({
-      host: host || undefined,
-      port: port || undefined
-    });
+  // Wrap in a promise to catch both thrown errors and emitted errors
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Set a timeout for the connection attempt
+      const timeoutId = setTimeout(() => {
+        reject(new Error('ADB connection timeout. Run "adb start-server" first.'));
+      }, 5000);
 
-    const deviceList = await Promise.all(devices.map(async (device) => {
-      // Get device info
-      const model = device.model();
-      const serial = device.serial();
+      const devices = await _android.devices({
+        host: host || undefined,
+        port: port || undefined
+      });
 
-      // Get Android version via shell
-      let androidVersion = 'unknown';
-      try {
-        const versionBuffer = await device.shell('getprop ro.build.version.release');
-        androidVersion = versionBuffer.toString().trim();
-      } catch (e) {
-        log(`Could not get Android version for ${serial}: ${e.message}`);
+      clearTimeout(timeoutId);
+
+      const deviceList = await Promise.all(devices.map(async (device) => {
+        // Get device info
+        const model = device.model();
+        const serial = device.serial();
+
+        // Get Android version via shell
+        let androidVersion = 'unknown';
+        try {
+          const versionBuffer = await device.shell('getprop ro.build.version.release');
+          androidVersion = versionBuffer.toString().trim();
+        } catch (e) {
+          log(`Could not get Android version for ${serial}: ${e.message}`);
+        }
+
+        return {
+          serial,
+          model,
+          status: 'device',
+          androidVersion
+        };
+      }));
+
+      resolve({ devices: deviceList });
+    } catch (error) {
+      if (error.message.includes('ECONNREFUSED') || error.message.includes('adb') || error.code === 'ECONNREFUSED') {
+        reject(new Error('ADB daemon not accessible. Run "adb start-server" first.'));
+      } else {
+        reject(error);
       }
-
-      return {
-        serial,
-        model,
-        status: 'device',
-        androidVersion
-      };
-    }));
-
-    return { devices: deviceList };
-  } catch (error) {
-    if (error.message.includes('ECONNREFUSED') || error.message.includes('adb')) {
-      throw new Error('ADB daemon not accessible. Run "adb start-server" first.');
     }
-    throw error;
-  }
+  });
 }
 
 // Create an Android automation session
@@ -2739,6 +2750,22 @@ async function shutdown() {
 
   process.exit(0);
 }
+
+// Handle uncaught errors gracefully (especially ADB connection errors)
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error.message);
+  // Don't exit for recoverable errors like ADB connection issues
+  if (error.code === 'ECONNREFUSED' && error.port === 5037) {
+    console.error('ADB connection refused - make sure "adb start-server" is running');
+    return; // Don't crash
+  }
+  // For other errors, log but try to continue
+  console.error('Stack:', error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled rejection:', reason);
+});
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

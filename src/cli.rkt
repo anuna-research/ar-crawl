@@ -1195,6 +1195,302 @@ Command-line interface for the web crawler for agents with service fallbacks.
          (flush-output)
          (loop)]))))
 
+;; ============================================================================
+;; Android Emulator Commands
+;; ============================================================================
+
+;; @function{cmd-android-devices}
+;; @description{List connected Android devices via ADB}
+(define (cmd-android-devices #:verbose [verbose #f])
+  (start-playwright-service #:verbose verbose)
+  (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+
+  (with-handlers ([exn:fail? (lambda (e)
+                               (displayln (jsexpr->string (hash 'error (exn-message e))))
+                               (exit EXIT-ERROR))])
+    (define resp (get-pure-port
+                  (string->url (string-append base-url "/android/devices"))))
+    (define data (string->jsexpr (port->string resp)))
+    (close-input-port resp)
+    (displayln (jsexpr->string data))))
+
+;; @function{cmd-android-session}
+;; @description{Start an interactive Android automation session}
+(define (cmd-android-session device-serial #:verbose [verbose #f])
+  (start-playwright-service #:verbose verbose)
+
+  (when verbose
+    (printf "Starting Android session on device: ~a~n" device-serial))
+
+  (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+
+  ;; Create Android session
+  (define session-id
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to create Android session: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (post-pure-port
+                    (string->url (string-append base-url "/android/session/create"))
+                    (string->bytes/utf-8 (jsexpr->string (hash 'serial device-serial)))
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+
+      ;; Check for error in response
+      (when (hash-has-key? data 'error)
+        (eprintf "~a: ~a~n" (color-error "error") (hash-ref data 'error))
+        (exit EXIT-ERROR))
+
+      (hash-ref data 'sessionId)))
+
+  ;; Output session info as JSON
+  (displayln (jsexpr->string (hash 'sessionId session-id
+                                   'device device-serial
+                                   'status "ready")))
+  (flush-output)
+
+  ;; REPL loop - accepts JSON actions
+  (let loop ()
+    (define input (read-line))
+
+    (unless (eof-object? input)
+      (define cmd-str (string-trim input))
+
+      (cond
+        [(string=? cmd-str "") (loop)]
+
+        ;; Exit without saving
+        [(member cmd-str '("exit" "quit"))
+         (with-handlers ([exn:fail? void])
+           (define resp (delete-pure-port
+                         (string->url (format "~a/android/session/~a" base-url session-id))))
+           (close-input-port resp))
+         (displayln (jsexpr->string (hash 'status "closed")))
+         (void)]
+
+        ;; Get current session state
+        [(or (string=? cmd-str "state") (string-prefix? cmd-str "state "))
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (loop))])
+           (define state-url (format "~a/android/session/~a/state" base-url session-id))
+           (define resp (get-pure-port (string->url state-url)))
+           (displayln (port->string resp))
+           (close-input-port resp)
+           (flush-output)
+           (loop))]
+
+        ;; Take screenshot
+        [(or (string=? cmd-str "screenshot") (string-prefix? cmd-str "screenshot "))
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (loop))])
+           (define parts (string-split cmd-str))
+           (define output-file (if (> (length parts) 1) (list-ref parts 1) #f))
+
+           (define screenshot-url
+             (if output-file
+                 (format "~a/android/session/~a/screenshot?path=~a" base-url session-id output-file)
+                 (format "~a/android/session/~a/screenshot" base-url session-id)))
+
+           (define resp (get-pure-port (string->url screenshot-url)))
+
+           (if output-file
+               (begin
+                 (displayln (port->string resp))
+                 (close-input-port resp))
+               ;; Binary data - report size
+               (let ([data (port->bytes resp)])
+                 (close-input-port resp)
+                 (displayln (jsexpr->string (hash 'size (bytes-length data)
+                                                  'hint "Use 'screenshot <file.png>' to save")))))
+           (flush-output)
+           (loop))]
+
+        ;; List WebViews
+        [(string=? cmd-str "webviews")
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (loop))])
+           (define result
+             (let ()
+               (define resp (post-pure-port
+                             (string->url (format "~a/android/session/~a/action" base-url session-id))
+                             (string->bytes/utf-8 (jsexpr->string (hash 'type "listWebViews")))
+                             (list "Content-Type: application/json")))
+               (define data (string->jsexpr (port->string resp)))
+               (close-input-port resp)
+               data))
+           (displayln (jsexpr->string result))
+           (flush-output)
+           (loop))]
+
+        ;; Shell command
+        [(string-prefix? cmd-str "shell ")
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (loop))])
+           (define command (substring cmd-str 6))  ; Remove "shell "
+           (define resp (post-pure-port
+                         (string->url (format "~a/android/session/~a/shell" base-url session-id))
+                         (string->bytes/utf-8 (jsexpr->string (hash 'command command)))
+                         (list "Content-Type: application/json")))
+           (displayln (port->string resp))
+           (close-input-port resp)
+           (flush-output)
+           (loop))]
+
+        ;; Commit session and output recording
+        [(or (string=? cmd-str "commit") (string-prefix? cmd-str "commit "))
+         (define parts (string-split cmd-str))
+         (define output-file (if (> (length parts) 1) (list-ref parts 1) #f))
+
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (void))])
+           (define resp (post-pure-port
+                         (string->url (format "~a/android/session/~a/commit" base-url session-id))
+                         (string->bytes/utf-8 "{}")
+                         (list "Content-Type: application/json")))
+           (define recording (string->jsexpr (port->string resp)))
+           (close-input-port resp)
+
+           (if output-file
+               (begin
+                 (call-with-output-file output-file
+                   (lambda (port)
+                     (write-json recording port #:indent 2))
+                   #:exists 'replace)
+                 (displayln (jsexpr->string (hash 'status "committed" 'file output-file))))
+               (displayln (jsexpr->string (hash 'status "committed" 'recording recording)))))
+         (void)]
+
+        ;; JSON action - parse and execute
+        [(string-prefix? cmd-str "{")
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'success #f 'error (exn-message e))))
+                                      (flush-output)
+                                      (loop))])
+           (define action (string->jsexpr cmd-str))
+           (define resp (post-pure-port
+                         (string->url (format "~a/android/session/~a/action" base-url session-id))
+                         (string->bytes/utf-8 cmd-str)
+                         (list "Content-Type: application/json")))
+           (displayln (port->string resp))
+           (close-input-port resp)
+           (flush-output)
+           (loop))]
+
+        ;; Help
+        [(string=? cmd-str "help")
+         (displayln (jsexpr->string
+                     (hash 'commands
+                           (hash 'actions "Send JSON objects for Android actions"
+                                 'state "Get current session state"
+                                 'screenshot "Take screenshot: screenshot [file.png]"
+                                 'webviews "List active WebViews"
+                                 'shell "Run shell command: shell <command>"
+                                 'commit "End session and return recording JSON"
+                                 'exit "Close session without saving")
+                           'actionTypes
+                           (hash 'tap "{\"type\": \"tap\", \"selector\": \"text=Button\"}"
+                                 'longTap "{\"type\": \"longTap\", \"selector\": \"text=Item\"}"
+                                 'swipe "{\"type\": \"swipe\", \"selector\": \"res=list\", \"direction\": \"up\", \"percent\": 50}"
+                                 'scroll "{\"type\": \"scroll\", \"selector\": \"res=view\", \"direction\": \"down\"}"
+                                 'fill "{\"type\": \"fill\", \"selector\": \"res=input\", \"text\": \"hello\"}"
+                                 'press "{\"type\": \"press\", \"key\": \"Enter\"}"
+                                 'launchBrowser "{\"type\": \"launchBrowser\", \"url\": \"https://...\"}")
+                           'selectors
+                           (hash 'resourceId "res=com.example:id/button"
+                                 'text "text=Submit"
+                                 'description "desc=Menu button"
+                                 'class "class=android.widget.Button"
+                                 'compound "res=btn&&text=OK"))))
+         (loop)]
+
+        ;; Unknown command
+        [else
+         (displayln (jsexpr->string (hash 'error "Unknown command. Send JSON action or use: state, screenshot, shell, commit, exit, help")))
+         (flush-output)
+         (loop)]))))
+
+;; @function{cmd-android-replay}
+;; @description{Replay an Android recording on a device}
+(define (cmd-android-replay recording-file
+                            #:device [device #f]
+                            #:speed [speed 1.0]
+                            #:screenshots [screenshots #f]
+                            #:verbose [verbose #f])
+  (start-playwright-service #:verbose verbose)
+
+  (when verbose
+    (printf "Replaying Android recording: ~a~n" recording-file))
+
+  ;; Load recording file
+  (define recording
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to read recording file: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (call-with-input-file recording-file
+        (lambda (port) (read-json port)))))
+
+  (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+
+  ;; Replay the recording
+  (with-handlers ([exn:fail? (lambda (e)
+                               (displayln (jsexpr->string (hash 'error (exn-message e))))
+                               (exit EXIT-ERROR))])
+    (define request-body
+      (hash 'recording recording
+            'serial device
+            'speed speed
+            'screenshotPerStep (if screenshots #t #f)))
+
+    (define resp (post-pure-port
+                  (string->url (string-append base-url "/android/replay"))
+                  (string->bytes/utf-8 (jsexpr->string request-body))
+                  (list "Content-Type: application/json")))
+    (define result (string->jsexpr (port->string resp)))
+    (close-input-port resp)
+    (displayln (jsexpr->string result))))
+
+;; @function{parse-android-args}
+;; @description{Parse arguments for android command}
+(define (parse-android-args args)
+  (command-line
+   #:program "ar-crawl android"
+   #:argv args
+   #:args remaining
+   remaining))
+
+;; @function{parse-android-session-args}
+;; @description{Parse arguments for android session subcommand}
+(define (parse-android-session-args args)
+  (command-line
+   #:program "ar-crawl android session"
+   #:argv args
+   #:args remaining
+   remaining))
+
+;; @function{parse-android-replay-args}
+;; @description{Parse arguments for android replay subcommand}
+(define android-replay-device (make-parameter #f))
+(define android-replay-speed (make-parameter 1.0))
+(define android-replay-screenshots (make-parameter #f))
+
+(define (parse-android-replay-args args)
+  (command-line
+   #:program "ar-crawl android replay"
+   #:argv args
+   #:once-each
+   [("-d" "--device") serial "Target device serial" (android-replay-device serial)]
+   [("-s" "--speed") spd "Replay speed multiplier" (android-replay-speed (string->number spd))]
+   [("--screenshots") "Capture screenshot per step" (android-replay-screenshots #t)]
+   #:args remaining
+   remaining))
+
 ;; @function{parse-session-command}
 ;; @description{Parse a command string into a JSON action object}
 (define (parse-session-command cmd-str)
@@ -2318,6 +2614,56 @@ Command-line interface for the web crawler for agents with service fallbacks.
         (with-playwright-cleanup
           (cmd-session #:verbose (verbose-mode)))]
 
+       [(android)
+        (when (empty? post-cmd-args)
+          (eprintf "~a: subcommand required for android command~n~n" (color-error "error"))
+          (eprintf "Subcommands: devices, session, replay~n~n")
+          (eprintf "Usage:~n")
+          (eprintf "  ar-crawl android devices              List connected Android devices~n")
+          (eprintf "  ar-crawl android session <serial>     Start interactive session~n")
+          (eprintf "  ar-crawl android replay <file.json>   Replay a recording~n~n")
+          (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help android"))
+          (exit EXIT-USAGE))
+
+        (define subcmd (car post-cmd-args))
+        (define subcmd-args (cdr post-cmd-args))
+
+        (case (string->symbol subcmd)
+          [(devices)
+           (with-playwright-cleanup
+             (cmd-android-devices #:verbose (verbose-mode)))]
+
+          [(session)
+           (when (empty? subcmd-args)
+             (eprintf "~a: device serial required for android session~n~n" (color-error "error"))
+             (eprintf "Usage: ar-crawl android session <device-serial>~n~n")
+             (eprintf "First run '~a' to list available devices.~n"
+                      (color-dim "ar-crawl android devices"))
+             (exit EXIT-USAGE))
+           (define device-serial (car subcmd-args))
+           (parse-android-session-args (cdr subcmd-args))
+           (with-playwright-cleanup
+             (cmd-android-session device-serial #:verbose (verbose-mode)))]
+
+          [(replay)
+           (when (empty? subcmd-args)
+             (eprintf "~a: recording file required for android replay~n~n" (color-error "error"))
+             (eprintf "Usage: ar-crawl android replay <recording.json> [options]~n")
+             (exit EXIT-USAGE))
+           (define recording-file (car subcmd-args))
+           (parse-android-replay-args (cdr subcmd-args))
+           (with-playwright-cleanup
+             (cmd-android-replay recording-file
+                                 #:device (android-replay-device)
+                                 #:speed (android-replay-speed)
+                                 #:screenshots (android-replay-screenshots)
+                                 #:verbose (verbose-mode)))]
+
+          [else
+           (eprintf "~a: unknown android subcommand '~a'~n" (color-error "error") subcmd)
+           (eprintf "~nAvailable subcommands: devices, session, replay~n")
+           (exit EXIT-USAGE)])]
+
        [(help)
         (if (empty? post-cmd-args)
             (show-main-help)
@@ -2448,7 +2794,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
 ;; Known commands for typo suggestions
 (define KNOWN-COMMANDS
-  '("crawl" "crawl-site" "probe" "replay" "session" "sample" "extract" "stats"
+  '("crawl" "crawl-site" "probe" "replay" "session" "android" "sample" "extract" "stats"
     "health" "test" "config" "services" "monitor" "help" "version"))
 
 ;; @function{levenshtein-distance}
@@ -3162,6 +3508,110 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  - This command uses Playwright and requires the playwright service.~n")
   (printf "  - Service starts automatically if not running.~n~n"))
 
+(define (show-android-help)
+  (printf "~nANDROID - Control Android emulators for mobile automation~n")
+  (printf "===========================================================~n~n")
+  (printf "Start Android automation sessions to test mobile apps and mobile web.~n")
+  (printf "Uses Playwright's experimental Android API via ADB.~n~n")
+
+  (printf "PREREQUISITES~n")
+  (printf "  - Android SDK with ADB installed~n")
+  (printf "  - Android emulator running OR physical device connected~n")
+  (printf "  - ADB daemon started: adb start-server~n")
+  (printf "  - Device authorized (check: adb devices)~n~n")
+
+  (printf "SUBCOMMANDS~n")
+  (printf "  devices                     List connected Android devices~n")
+  (printf "  session <serial>            Start interactive session on device~n")
+  (printf "  replay <file.json>          Replay a recording~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl android devices~n")
+  (printf "  ar-crawl android session <device-serial>~n")
+  (printf "  ar-crawl android replay <recording.json> [options]~n~n")
+
+  (printf "REPLAY OPTIONS~n")
+  (printf "  -d, --device <serial>       Target device (default: from recording)~n")
+  (printf "  -s, --speed <multiplier>    Replay speed (default: 1.0)~n")
+  (printf "      --screenshots           Capture screenshot per step~n~n")
+
+  (printf "SESSION COMMANDS (stdin)~n")
+  (printf "  {\"type\": \"...\", ...}        Execute Android action (JSON)~n")
+  (printf "  state                       Get current session state~n")
+  (printf "  screenshot [file.png]       Take screenshot~n")
+  (printf "  webviews                    List active WebViews~n")
+  (printf "  shell <command>             Run ADB shell command~n")
+  (printf "  commit [file.json]          End session, output/save recording~n")
+  (printf "  exit                        Close session without saving~n")
+  (printf "  help                        Show available actions~n~n")
+
+  (printf "ANDROID ACTIONS (JSON format)~n")
+  (printf "  Tap:~n")
+  (printf "    {\"type\": \"tap\", \"selector\": \"text=Submit\"}~n")
+  (printf "    {\"type\": \"tap\", \"selector\": \"res=com.example:id/button\"}~n")
+  (printf "    {\"type\": \"longTap\", \"selector\": \"text=Item\"}~n~n")
+
+  (printf "  Gestures:~n")
+  (printf "    {\"type\": \"swipe\", \"selector\": \"res=list\", \"direction\": \"up\", \"percent\": 50}~n")
+  (printf "    {\"type\": \"scroll\", \"selector\": \"res=view\", \"direction\": \"down\"}~n")
+  (printf "    {\"type\": \"fling\", \"selector\": \"res=list\", \"direction\": \"down\"}~n")
+  (printf "    {\"type\": \"pinchOpen\", \"selector\": \"res=image\", \"percent\": 50}~n")
+  (printf "    {\"type\": \"pinchClose\", \"selector\": \"res=image\", \"percent\": 50}~n")
+  (printf "    {\"type\": \"drag\", \"selector\": \"res=item\", \"dest\": {\"x\": 500, \"y\": 800}}~n~n")
+
+  (printf "  Text Input:~n")
+  (printf "    {\"type\": \"fill\", \"selector\": \"res=input\", \"text\": \"hello\"}~n")
+  (printf "    {\"type\": \"type\", \"text\": \"hello\"}  (to focused element)~n")
+  (printf "    {\"type\": \"press\", \"key\": \"Enter\"}~n~n")
+
+  (printf "  Wait:~n")
+  (printf "    {\"type\": \"wait\", \"selector\": \"text=Loading\", \"state\": \"gone\"}~n~n")
+
+  (printf "  Browser (launches Chrome):~n")
+  (printf "    {\"type\": \"launchBrowser\", \"url\": \"https://example.com\"}~n~n")
+
+  (printf "  Device Operations:~n")
+  (printf "    {\"type\": \"screenshot\"}~n")
+  (printf "    {\"type\": \"info\"}                    Get device info~n")
+  (printf "    {\"type\": \"info\", \"selector\": \"...\"}  Get widget info~n~n")
+
+  (printf "SELECTOR FORMATS~n")
+  (printf "  res=com.example:id/button    Resource ID~n")
+  (printf "  text=Submit                  Text content~n")
+  (printf "  desc=Menu button             Content description~n")
+  (printf "  class=android.widget.Button  Widget class~n")
+  (printf "  res=btn&&text=OK             Compound (AND)~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # List devices~n")
+  (printf "  $ ar-crawl android devices~n")
+  (printf "  {\"devices\":[{\"serial\":\"emulator-5554\",\"model\":\"sdk_gphone64\"}]}~n~n")
+
+  (printf "  # Start session~n")
+  (printf "  $ ar-crawl android session emulator-5554~n")
+  (printf "  {\"sessionId\":\"android-abc123\",\"status\":\"ready\"}~n~n")
+
+  (printf "  # Tap and swipe~n")
+  (printf "  {\"type\": \"tap\", \"selector\": \"text=Settings\"}~n")
+  (printf "  {\"type\": \"swipe\", \"selector\": \"res=list\", \"direction\": \"up\"}~n~n")
+
+  (printf "  # Save recording~n")
+  (printf "  commit mobile-flow.json~n~n")
+
+  (printf "  # Replay on another device~n")
+  (printf "  $ ar-crawl android replay mobile-flow.json -d emulator-5556~n~n")
+
+  (printf "RECORDING FORMAT~n")
+  (printf "  Android recordings include device metadata:~n")
+  (printf "  {\"title\": \"...\", \"device\": {\"serial\": \"...\", \"model\": \"...\"},~n")
+  (printf "   \"steps\": [{\"type\": \"android/tap\", ...}], \"metadata\": {...}}~n~n")
+
+  (printf "NOTES~n")
+  (printf "  - Requires Playwright service (starts automatically)~n")
+  (printf "  - Android API is experimental - some features may change~n")
+  (printf "  - WebView automation requires Chrome 87+ on device~n")
+  (printf "  - For browser testing, use 'launchBrowser' action~n~n"))
+
 ;; @function{show-command-help}
 ;; @description{Show help for a specific command}
 (define (show-command-help command)
@@ -3171,6 +3621,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(probe) (show-probe-help)]
     [(replay) (show-replay-help)]
     [(session) (show-session-help)]
+    [(android) (show-android-help)]
     [(extract) (show-extract-help)]
     [(sample) (show-sample-help)]
     [(health) (show-health-help)]
@@ -3180,7 +3631,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(monitor) (show-monitor-help)]
     [else
      (printf "Unknown command: ~a~n~n" command)
-     (printf "Available commands: crawl, crawl-site, probe, replay, session, extract, sample, health, test, config, services, monitor~n")
+     (printf "Available commands: crawl, crawl-site, probe, replay, session, android, extract, sample, health, test, config, services, monitor~n")
      (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters
