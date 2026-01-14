@@ -1,10 +1,12 @@
 const http = require('http');
 const { chromium } = require('playwright-extra');
+const { _android } = require('playwright');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const crypto = require('crypto');
 
 // Session storage
 const sessions = new Map();
+const androidSessions = new Map();
 
 // Helper for session IDs without external deps
 function uuidv4() {
@@ -111,6 +113,117 @@ function toDevToolsFormat(action) {
   return step;
 }
 
+// Convert Android action to DevTools Recorder format with android/ prefix
+function toAndroidDevToolsFormat(action) {
+  const step = {
+    type: `android/${action.type}`,
+    timestamp: action.timestamp || Date.now()
+  };
+
+  // Copy selector
+  if (action.selector) {
+    step.selector = action.selector;
+  }
+
+  // Copy direction for swipe/scroll/fling
+  if (action.direction) {
+    step.direction = action.direction;
+  }
+
+  // Copy percent for swipe/scroll/pinch
+  if (action.percent !== undefined) {
+    step.percent = action.percent;
+  }
+
+  // Copy speed for gestures
+  if (action.speed !== undefined) {
+    step.speed = action.speed;
+  }
+
+  // Copy duration for tap
+  if (action.duration !== undefined) {
+    step.duration = action.duration;
+  }
+
+  // Copy text/value for fill
+  if (action.text !== undefined) {
+    step.text = action.text;
+  }
+  if (action.value !== undefined) {
+    step.value = action.value;
+  }
+
+  // Copy URL for browser launch
+  if (action.url) {
+    step.url = action.url;
+  }
+
+  // Copy destination for drag
+  if (action.dest) {
+    step.dest = action.dest;
+  }
+
+  // Copy key for press
+  if (action.key) {
+    step.key = action.key;
+  }
+
+  // Copy command for shell
+  if (action.command) {
+    step.command = action.command;
+  }
+
+  // Copy options if present
+  if (action.options) {
+    step.options = action.options;
+  }
+
+  return step;
+}
+
+// Parse Android selector string to Playwright selector object
+// Formats: res=id, text=Submit, desc=Menu, class=Button, compound: res=btn&&text=OK
+function parseAndroidSelector(selectorStr) {
+  if (typeof selectorStr === 'object') {
+    return selectorStr; // Already an object
+  }
+
+  if (typeof selectorStr !== 'string') {
+    throw new Error('Selector must be a string or object');
+  }
+
+  // Handle compound selectors (res=btn&&text=OK)
+  if (selectorStr.includes('&&')) {
+    const parts = selectorStr.split('&&');
+    const result = {};
+    for (const part of parts) {
+      const parsed = parseAndroidSelector(part.trim());
+      Object.assign(result, parsed);
+    }
+    return result;
+  }
+
+  // Parse single selector
+  const match = selectorStr.match(/^(res|text|desc|class)=(.+)$/);
+  if (!match) {
+    throw new Error(`Invalid Android selector format: ${selectorStr}. Use res=, text=, desc=, or class=`);
+  }
+
+  const [, type, value] = match;
+  switch (type) {
+    case 'res':
+      return { res: value };
+    case 'text':
+      return { text: value };
+    case 'desc':
+      return { desc: value };
+    case 'class':
+      return { clazz: value }; // Playwright uses 'clazz' not 'class'
+    default:
+      throw new Error(`Unknown selector type: ${type}`);
+  }
+}
+
 async function initBrowser() {
   if (!browser) {
     browser = await chromium.launch({
@@ -125,6 +238,546 @@ async function initBrowser() {
     log('Browser initialized with stealth mode');
   }
   return browser;
+}
+
+// ============================================================================
+// Android Emulator Support
+// ============================================================================
+
+// Discover connected Android devices via ADB
+async function discoverAndroidDevices(options = {}) {
+  const { host, port } = options;
+
+  try {
+    const devices = await _android.devices({
+      host: host || undefined,
+      port: port || undefined
+    });
+
+    const deviceList = await Promise.all(devices.map(async (device) => {
+      // Get device info
+      const model = device.model();
+      const serial = device.serial();
+
+      // Get Android version via shell
+      let androidVersion = 'unknown';
+      try {
+        const versionBuffer = await device.shell('getprop ro.build.version.release');
+        androidVersion = versionBuffer.toString().trim();
+      } catch (e) {
+        log(`Could not get Android version for ${serial}: ${e.message}`);
+      }
+
+      return {
+        serial,
+        model,
+        status: 'device',
+        androidVersion
+      };
+    }));
+
+    return { devices: deviceList };
+  } catch (error) {
+    if (error.message.includes('ECONNREFUSED') || error.message.includes('adb')) {
+      throw new Error('ADB daemon not accessible. Run "adb start-server" first.');
+    }
+    throw error;
+  }
+}
+
+// Create an Android automation session
+async function createAndroidSession(options = {}) {
+  const { serial, timeout = 30000, omitDriverInstall = false } = options;
+
+  if (!serial) {
+    throw new Error('Device serial required');
+  }
+
+  // Find the device
+  const devices = await _android.devices();
+  const device = devices.find(d => d.serial() === serial);
+
+  if (!device) {
+    const available = devices.map(d => d.serial()).join(', ') || 'none';
+    throw new Error(`Device not found: ${serial}. Available: ${available}`);
+  }
+
+  const sessionId = `android-${uuidv4()}`;
+  const model = device.model();
+
+  // Get screen info
+  let screen = { width: 0, height: 0 };
+  try {
+    const info = await device.info();
+    screen = { width: info.width || 0, height: info.height || 0 };
+  } catch (e) {
+    log(`Could not get screen info for ${serial}: ${e.message}`);
+  }
+
+  const session = {
+    id: sessionId,
+    device,
+    serial,
+    model,
+    screen,
+    createdAt: Date.now(),
+    lastActivity: Date.now(),
+    steps: [],
+    webViews: new Map(),
+    browserContext: null
+  };
+
+  androidSessions.set(sessionId, session);
+  log(`Android session created: ${sessionId} on ${model} (${serial})`);
+
+  return {
+    sessionId,
+    device: { serial, model },
+    screen,
+    createdAt: new Date(session.createdAt).toISOString()
+  };
+}
+
+// Close an Android session
+async function closeAndroidSession(sessionId) {
+  const session = androidSessions.get(sessionId);
+  if (!session) {
+    throw new Error('Android session not found');
+  }
+
+  // Close browser context if open
+  if (session.browserContext) {
+    try {
+      await session.browserContext.close();
+    } catch (e) {
+      log(`Error closing browser context: ${e.message}`);
+    }
+  }
+
+  // Close WebView connections
+  for (const [, webView] of session.webViews) {
+    try {
+      // WebViews are cleaned up automatically
+    } catch (e) {
+      log(`Error closing WebView: ${e.message}`);
+    }
+  }
+
+  // Close device connection
+  try {
+    await session.device.close();
+  } catch (e) {
+    log(`Error closing device: ${e.message}`);
+  }
+
+  androidSessions.delete(sessionId);
+  log(`Android session closed: ${sessionId}`);
+}
+
+// Execute an Android action
+async function executeAndroidAction(sessionId, action) {
+  const session = androidSessions.get(sessionId);
+  if (!session) {
+    throw new Error('Android session not found');
+  }
+
+  session.lastActivity = Date.now();
+  const { device } = session;
+  const result = { success: true };
+  const stepRecord = {
+    type: action.type,
+    ...action,
+    timestamp: Date.now()
+  };
+
+  const timeout = action.timeout || action.options?.timeout || 30000;
+
+  try {
+    switch (action.type) {
+      // ========== Tap Actions ==========
+      case 'tap': {
+        const selector = parseAndroidSelector(action.selector);
+        await device.tap(selector, {
+          duration: action.duration || action.options?.duration,
+          timeout
+        });
+        result.action = 'tap';
+        break;
+      }
+
+      case 'longTap': {
+        const selector = parseAndroidSelector(action.selector);
+        await device.longTap(selector, { timeout });
+        result.action = 'longTap';
+        break;
+      }
+
+      // ========== Swipe/Scroll Actions ==========
+      case 'swipe': {
+        const selector = parseAndroidSelector(action.selector);
+        const direction = action.direction || 'up';
+        const percent = action.percent || 50;
+        await device.swipe(selector, direction, percent, {
+          speed: action.speed || action.options?.speed,
+          timeout
+        });
+        result.action = 'swipe';
+        result.direction = direction;
+        break;
+      }
+
+      case 'scroll': {
+        const selector = parseAndroidSelector(action.selector);
+        const direction = action.direction || 'down';
+        const percent = action.percent || 50;
+        await device.scroll(selector, direction, percent, {
+          speed: action.speed || action.options?.speed,
+          timeout
+        });
+        result.action = 'scroll';
+        result.direction = direction;
+        break;
+      }
+
+      case 'fling': {
+        const selector = parseAndroidSelector(action.selector);
+        const direction = action.direction || 'down';
+        await device.fling(selector, direction, {
+          speed: action.speed || action.options?.speed,
+          timeout
+        });
+        result.action = 'fling';
+        result.direction = direction;
+        break;
+      }
+
+      // ========== Pinch Actions ==========
+      case 'pinchOpen': {
+        const selector = parseAndroidSelector(action.selector);
+        const percent = action.percent || 50;
+        await device.pinchOpen(selector, percent, {
+          speed: action.speed || action.options?.speed,
+          timeout
+        });
+        result.action = 'pinchOpen';
+        break;
+      }
+
+      case 'pinchClose': {
+        const selector = parseAndroidSelector(action.selector);
+        const percent = action.percent || 50;
+        await device.pinchClose(selector, percent, {
+          speed: action.speed || action.options?.speed,
+          timeout
+        });
+        result.action = 'pinchClose';
+        break;
+      }
+
+      // ========== Drag Action ==========
+      case 'drag': {
+        const selector = parseAndroidSelector(action.selector);
+        const dest = action.dest || { x: 0, y: 0 };
+        await device.drag(selector, dest, {
+          speed: action.speed || action.options?.speed,
+          timeout
+        });
+        result.action = 'drag';
+        result.dest = dest;
+        break;
+      }
+
+      // ========== Text Input Actions ==========
+      case 'fill': {
+        const selector = parseAndroidSelector(action.selector);
+        const text = action.text || action.value || '';
+        await device.fill(selector, text, { timeout });
+        result.action = 'fill';
+        result.text = text;
+        break;
+      }
+
+      case 'type': {
+        // Type text character by character to focused element
+        const text = action.text || action.value || '';
+        for (const char of text) {
+          await device.press(char);
+        }
+        result.action = 'type';
+        result.text = text;
+        break;
+      }
+
+      case 'press': {
+        // Press a specific key
+        const key = action.key;
+        if (!key) {
+          throw new Error('Key is required for press action');
+        }
+        await device.press(key);
+        result.action = 'press';
+        result.key = key;
+        break;
+      }
+
+      // ========== Wait Action ==========
+      case 'wait': {
+        const selector = parseAndroidSelector(action.selector);
+        const state = action.state || action.options?.state || 'visible';
+        await device.wait(selector, {
+          state, // 'visible' or 'gone'
+          timeout
+        });
+        result.action = 'wait';
+        result.state = state;
+        break;
+      }
+
+      // ========== Screenshot ==========
+      case 'screenshot': {
+        const buffer = await device.screenshot({
+          path: action.path || action.options?.path
+        });
+        result.action = 'screenshot';
+        result.size = buffer.length;
+        if (!action.path && !action.options?.path) {
+          result.buffer = buffer.toString('base64');
+        }
+        break;
+      }
+
+      // ========== Device Info ==========
+      case 'info': {
+        const selector = action.selector ? parseAndroidSelector(action.selector) : null;
+        if (selector) {
+          const info = await device.info(selector);
+          result.widgetInfo = info;
+        } else {
+          // Get general device info
+          const info = await device.info();
+          result.deviceInfo = info;
+        }
+        result.action = 'info';
+        break;
+      }
+
+      // ========== Shell Command ==========
+      case 'shell': {
+        const command = action.command;
+        if (!command) {
+          throw new Error('Command is required for shell action');
+        }
+        const output = await device.shell(command);
+        result.action = 'shell';
+        result.output = output.toString();
+        break;
+      }
+
+      // ========== File Operations ==========
+      case 'push': {
+        const file = action.file;
+        const path = action.path;
+        if (!file || !path) {
+          throw new Error('Both file and path are required for push action');
+        }
+        await device.push(file, path, {
+          mode: action.mode || action.options?.mode
+        });
+        result.action = 'push';
+        result.path = path;
+        break;
+      }
+
+      case 'install': {
+        const apk = action.apk;
+        if (!apk) {
+          throw new Error('APK path is required for install action');
+        }
+        await device.installApk(apk, {
+          args: action.args || action.options?.args
+        });
+        result.action = 'install';
+        result.apk = apk;
+        break;
+      }
+
+      // ========== WebView Actions ==========
+      case 'listWebViews': {
+        const webViews = await device.webViews();
+        result.webViews = webViews.map(wv => ({
+          pkg: wv.pkg(),
+          pid: wv.pid()
+        }));
+        result.action = 'listWebViews';
+        break;
+      }
+
+      case 'connectWebView': {
+        const selector = action.selector || {};
+        const webView = await device.webView(selector);
+        const page = await webView.page();
+
+        const webViewId = `wv-${uuidv4()}`;
+        session.webViews.set(webViewId, { webView, page });
+
+        result.webViewId = webViewId;
+        result.pkg = webView.pkg();
+        result.pid = webView.pid();
+        result.url = page.url();
+        result.action = 'connectWebView';
+        break;
+      }
+
+      case 'disconnectWebView': {
+        const webViewId = action.webViewId;
+        if (!webViewId || !session.webViews.has(webViewId)) {
+          throw new Error('Invalid WebView ID');
+        }
+        session.webViews.delete(webViewId);
+        result.action = 'disconnectWebView';
+        break;
+      }
+
+      // ========== Browser Launch ==========
+      case 'launchBrowser': {
+        const url = action.url;
+        const browserContext = await device.launchBrowser({
+          pkg: action.pkg || 'com.android.chrome',
+          ...action.options
+        });
+
+        session.browserContext = browserContext;
+        const pages = browserContext.pages();
+        const page = pages[0] || await browserContext.newPage();
+
+        if (url) {
+          await page.goto(url, {
+            waitUntil: action.waitUntil || 'networkidle',
+            timeout
+          });
+        }
+
+        result.action = 'launchBrowser';
+        result.url = page.url();
+        result.title = await page.title();
+        break;
+      }
+
+      default:
+        throw new Error(`Unknown Android action type: ${action.type}`);
+    }
+  } catch (error) {
+    result.success = false;
+    result.error = error.message;
+    stepRecord.error = error.message;
+    throw error;
+  } finally {
+    // Record step in Android DevTools format
+    const devToolsStep = toAndroidDevToolsFormat(stepRecord);
+    session.steps.push(devToolsStep);
+  }
+
+  return result;
+}
+
+// Replay an Android recording
+async function replayAndroidRecording(options = {}) {
+  const { recording, serial, speed = 1.0, screenshotPerStep = false, stopOnError = true } = options;
+
+  if (!recording || !recording.steps) {
+    throw new Error('Recording with steps array is required');
+  }
+
+  const targetSerial = serial || recording.device?.serial;
+  if (!targetSerial) {
+    throw new Error('Target device serial is required');
+  }
+
+  // Create session for replay
+  const sessionResult = await createAndroidSession({ serial: targetSerial });
+  const sessionId = sessionResult.sessionId;
+  const session = androidSessions.get(sessionId);
+
+  const results = [];
+  const screenshots = [];
+  let failed = 0;
+
+  try {
+    for (let i = 0; i < recording.steps.length; i++) {
+      const step = recording.steps[i];
+      const stepResult = {
+        step: i,
+        type: step.type,
+        status: 'pending'
+      };
+
+      const startTime = Date.now();
+
+      try {
+        // Convert android/* type back to action type
+        const actionType = step.type.startsWith('android/')
+          ? step.type.slice(8)
+          : step.type;
+
+        await executeAndroidAction(sessionId, {
+          type: actionType,
+          ...step,
+          // Apply speed modifier to timeouts
+          timeout: (step.timeout || 30000) / speed
+        });
+
+        stepResult.status = 'passed';
+        stepResult.duration = Date.now() - startTime;
+
+        // Capture screenshot if requested
+        if (screenshotPerStep) {
+          try {
+            const screenshotResult = await executeAndroidAction(sessionId, {
+              type: 'screenshot'
+            });
+            screenshots.push({
+              step: i,
+              buffer: screenshotResult.buffer
+            });
+          } catch (e) {
+            log(`Screenshot failed at step ${i}: ${e.message}`);
+          }
+        }
+
+        // Add delay between steps based on speed
+        if (i < recording.steps.length - 1) {
+          const delay = Math.max(100, 500 / speed);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      } catch (error) {
+        stepResult.status = 'failed';
+        stepResult.error = error.message;
+        stepResult.duration = Date.now() - startTime;
+        failed++;
+
+        if (stopOnError) {
+          results.push(stepResult);
+          break;
+        }
+      }
+
+      results.push(stepResult);
+    }
+
+    return {
+      status: failed === 0 ? 'completed' : 'failed',
+      progress: {
+        completed: results.length,
+        total: recording.steps.length,
+        failed
+      },
+      results,
+      screenshots: screenshotPerStep ? screenshots : undefined
+    };
+  } finally {
+    // Clean up session
+    await closeAndroidSession(sessionId);
+  }
 }
 
 // Session management
@@ -1657,9 +2310,398 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // ============================================================================
+  // Android Endpoints
+  // ============================================================================
+
+  // GET /android/devices - List connected Android devices
+  if (req.method === 'GET' && req.url.startsWith('/android/devices')) {
+    try {
+      const urlParts = req.url.split('?');
+      let options = {};
+      if (urlParts[1]) {
+        const params = new URLSearchParams(urlParts[1]);
+        if (params.get('host')) options.host = params.get('host');
+        if (params.get('port')) options.port = parseInt(params.get('port'), 10);
+      }
+      const result = await discoverAndroidDevices(options);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      console.error('Android device discovery error:', error.message);
+      const status = error.message.includes('ADB') ? 500 : 500;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: error.message,
+        hint: error.message.includes('ADB') ? 'Run "adb start-server" first' : undefined
+      }));
+    }
+    return;
+  }
+
+  // POST /android/replay - Replay an Android recording
+  if (req.method === 'POST' && req.url === '/android/replay') {
+    try {
+      const options = await parseBody(req);
+      if (!options.recording) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Recording is required' }));
+        return;
+      }
+      log(`Replaying Android recording: ${options.recording.title || 'untitled'}`);
+      const result = await replayAndroidRecording(options);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      console.error('Android replay error:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+
+  // POST /android/connect - Connect to remote device via WebSocket
+  if (req.method === 'POST' && req.url === '/android/connect') {
+    try {
+      const options = await parseBody(req);
+      if (!options.wsEndpoint) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'wsEndpoint is required' }));
+        return;
+      }
+
+      const device = await _android.connect(options.wsEndpoint, {
+        headers: options.headers,
+        slowMo: options.slowMo,
+        timeout: options.timeout || 30000
+      });
+
+      const sessionId = `android-remote-${uuidv4()}`;
+      const model = device.model();
+      const serial = device.serial();
+
+      let screen = { width: 0, height: 0 };
+      try {
+        const info = await device.info();
+        screen = { width: info.width || 0, height: info.height || 0 };
+      } catch (e) {
+        log(`Could not get screen info: ${e.message}`);
+      }
+
+      const session = {
+        id: sessionId,
+        device,
+        serial,
+        model,
+        screen,
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+        steps: [],
+        webViews: new Map(),
+        browserContext: null,
+        remote: true
+      };
+
+      androidSessions.set(sessionId, session);
+      log(`Remote Android session created: ${sessionId}`);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        sessionId,
+        device: { serial, model },
+        screen
+      }));
+    } catch (error) {
+      console.error('Android remote connect error:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+    return;
+  }
+
+  // Android session endpoints
+  if (req.url && req.url.startsWith('/android/session')) {
+    const parts = req.url.split('/').filter(p => p);
+    // parts: ['android', 'session', 'create'] or ['android', 'session', '{id}', 'action']
+
+    // POST /android/session/create
+    if (req.method === 'POST' && parts.length === 3 && parts[2] === 'create') {
+      try {
+        const options = await parseBody(req);
+        const result = await createAndroidSession(options);
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android session create error:', error.message);
+        const status = error.message.includes('not found') ? 404 :
+                       error.message.includes('required') ? 400 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // Get session ID from URL
+    const sessionId = parts[2];
+
+    // POST /android/session/{id}/action
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'action') {
+      try {
+        const action = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, action);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android action error:', error.message);
+        const status = error.message.includes('not found') ? 404 :
+                       error.message.includes('timeout') ? 408 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: error.message,
+          selector: error.message.includes('Widget') ? undefined : undefined
+        }));
+      }
+      return;
+    }
+
+    // GET /android/session/{id}/screenshot
+    if (req.method === 'GET' && parts.length === 4 && parts[3] === 'screenshot') {
+      try {
+        const session = androidSessions.get(sessionId);
+        if (!session) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Android session not found' }));
+          return;
+        }
+
+        // Parse query params for path and selector
+        const urlParts = req.url.split('?');
+        let options = {};
+        if (urlParts[1]) {
+          const params = new URLSearchParams(urlParts[1]);
+          if (params.get('path')) options.path = params.get('path');
+          if (params.get('selector')) options.selector = params.get('selector');
+        }
+
+        const buffer = await session.device.screenshot({
+          path: options.path
+        });
+
+        if (options.path) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ saved: true, path: options.path, size: buffer.length }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'image/png' });
+          res.end(buffer);
+        }
+      } catch (error) {
+        console.error('Android screenshot error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: error.message,
+          hint: error.message.includes('screen') ? 'Wake device first' : undefined
+        }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/webview/connect
+    if (req.method === 'POST' && parts.length === 5 && parts[3] === 'webview' && parts[4] === 'connect') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'connectWebView',
+          selector: options.selector,
+          timeout: options.timeout
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android WebView connect error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/browser/launch
+    if (req.method === 'POST' && parts.length === 5 && parts[3] === 'browser' && parts[4] === 'launch') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'launchBrowser',
+          url: options.url,
+          pkg: options.pkg,
+          options: options.options
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android browser launch error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/install
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'install') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'install',
+          apk: options.apk,
+          args: options.args
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android install error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/shell
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'shell') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'shell',
+          command: options.command
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android shell error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/push
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'push') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'push',
+          file: options.file,
+          path: options.path,
+          mode: options.mode
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android push error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/commit
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'commit') {
+      try {
+        const session = androidSessions.get(sessionId);
+        if (!session) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Android session not found' }));
+          return;
+        }
+
+        const options = await parseBody(req);
+
+        // Auto-generate title
+        const date = new Date(session.createdAt);
+        const dateStr = date.toISOString().split('T')[0];
+        const timeStr = date.toTimeString().slice(0, 5).replace(':', '');
+        const title = options.title || `Android Session ${dateStr} ${timeStr} - ${session.model}`;
+
+        const recording = {
+          title,
+          device: {
+            serial: session.serial,
+            model: session.model,
+            screen: session.screen
+          },
+          steps: session.steps,
+          metadata: {
+            ...options.metadata,
+            recordedAt: new Date(session.createdAt).toISOString(),
+            duration: Date.now() - session.createdAt
+          }
+        };
+
+        await closeAndroidSession(sessionId);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(recording));
+      } catch (error) {
+        console.error('Android commit error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // GET /android/session/{id}/state
+    if ((req.method === 'GET' || req.method === 'POST') && parts.length === 4 && parts[3].startsWith('state')) {
+      try {
+        const session = androidSessions.get(sessionId);
+        if (!session) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Android session not found' }));
+          return;
+        }
+
+        const result = {
+          sessionId,
+          device: {
+            serial: session.serial,
+            model: session.model,
+            screen: session.screen
+          },
+          createdAt: new Date(session.createdAt).toISOString(),
+          lastActivity: new Date(session.lastActivity).toISOString(),
+          stepsRecorded: session.steps.length,
+          webViews: session.webViews.size,
+          browserLaunched: session.browserContext !== null
+        };
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android state error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // DELETE /android/session/{id}
+    if (req.method === 'DELETE' && parts.length === 3) {
+      try {
+        await closeAndroidSession(sessionId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (error) {
+        console.error('Android session close error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+  }
+
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', browser: browser ? 'running' : 'not started' }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      browser: browser ? 'running' : 'not started',
+      androidSessions: androidSessions.size
+    }));
     return;
   }
 
@@ -1668,20 +2710,38 @@ const server = http.createServer(async (req, res) => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', async () => {
+// Graceful shutdown - close all sessions
+async function shutdown() {
   console.log('\nShutting down...');
-  if (browser) {
-    await browser.close();
-  }
-  process.exit(0);
-});
 
-process.on('SIGTERM', async () => {
+  // Close all Android sessions
+  for (const [sessionId] of androidSessions) {
+    try {
+      await closeAndroidSession(sessionId);
+    } catch (e) {
+      console.error(`Error closing Android session ${sessionId}: ${e.message}`);
+    }
+  }
+
+  // Close browser sessions
+  for (const [sessionId] of sessions) {
+    try {
+      await closeSession(sessionId);
+    } catch (e) {
+      console.error(`Error closing session ${sessionId}: ${e.message}`);
+    }
+  }
+
+  // Close browser
   if (browser) {
     await browser.close();
   }
+
   process.exit(0);
-});
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 server.listen(PORT, () => {
   log(`Playwright service running on http://localhost:${PORT}`);
@@ -1690,4 +2750,12 @@ server.listen(PORT, () => {
   log('  POST /probe    - Probe page load performance metrics');
   log('  POST /replay   - Replay a Chrome DevTools Recorder JSON recording');
   log('  GET  /health   - Health check');
+  log('');
+  log('Android Endpoints:');
+  log('  GET  /android/devices              - List connected Android devices');
+  log('  POST /android/session/create       - Create Android session');
+  log('  POST /android/session/{id}/action  - Execute Android action');
+  log('  GET  /android/session/{id}/screenshot - Capture screenshot');
+  log('  POST /android/session/{id}/commit  - Export recording');
+  log('  POST /android/replay               - Replay Android recording');
 });
