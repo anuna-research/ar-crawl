@@ -17,7 +17,9 @@
 
 ;; Helper to run CLI commands and capture output
 (define (run-cli . args)
-  (define cmd (string-append "cd " (path->string (current-directory))
+  ;; Navigate to the parent directory (project root) to find src/cli.rkt
+  (define project-root (simplify-path (build-path (current-directory) "..")))
+  (define cmd (string-append "cd " (path->string project-root)
                             " && racket src/cli.rkt "
                             (string-join args " ")))
   (define-values (proc stdout stdin stderr)

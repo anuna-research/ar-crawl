@@ -50,15 +50,15 @@
 (test-case "Robots.txt caching"
   (define cache (create-robots-cache))
   (define robots (parse-robots-txt "User-agent: *\nDisallow: /test/" "example.com"))
-  
+
   ;; Cache should be empty initially
-  (check-false (get-cached-robots cache "https://example.com" "TestBot"))
-  
+  (check-false (get-cached-robots cache "https://example.com" "example.com"))
+
   ;; Cache the robots.txt
   (cache-robots cache "https://example.com" robots)
-  
-  ;; Should be able to retrieve from cache
-  (define cached (get-cached-robots cache "https://example.com" "TestBot"))
+
+  ;; Should be able to retrieve from cache (uses host as key)
+  (define cached (get-cached-robots cache "https://example.com" "example.com"))
   (check-true (robots-txt? cached))
   (check-equal? (robots-txt-host cached) "example.com"))
 

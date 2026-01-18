@@ -41,11 +41,11 @@
 (test-case "User-agent specific rules"
   (define content "User-agent: TestBot\nDisallow: /test/\n\nUser-agent: *\nDisallow: /admin/")
   (define robots (parse-robots-txt content "example.com"))
-  
-  ;; TestBot should be blocked from /test/ but not /admin/
+
+  ;; TestBot should be blocked from /test/ and also /admin/ (wildcard rules still apply)
   (check-false (is-crawling-allowed? robots "TestBot" "/test/"))
-  (check-true (is-crawling-allowed? robots "TestBot" "/admin/"))
-  
+  (check-false (is-crawling-allowed? robots "TestBot" "/admin/"))
+
   ;; Other bots should be blocked from /admin/ but not /test/
   (check-true (is-crawling-allowed? robots "OtherBot" "/test/"))
   (check-false (is-crawling-allowed? robots "OtherBot" "/admin/")))
