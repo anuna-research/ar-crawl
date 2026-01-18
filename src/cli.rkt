@@ -24,7 +24,8 @@ Command-line interface for the web crawler for agents with service fallbacks.
          "data-formatter.rkt"
          "html-extractor.rkt"
          "utils.rkt"
-         "error-handler.rkt")
+         "error-handler.rkt"
+         "version-info.rkt")
 
 (module+ main)
 
@@ -2715,8 +2716,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 (define pw-click-count (make-parameter 1))
 (define pw-delay (make-parameter 5000))
 
-;; Version info
-(define AR-CRAWL-VERSION "1.0.0")
+;; Version info - imported from version-info.rkt (generated at build time)
 
 ;; Exit codes - standardized per clig.dev
 (define EXIT-SUCCESS 0)
@@ -2838,7 +2838,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
 (define (show-version)
   (printf "ar-crawl ~a~n" AR-CRAWL-VERSION)
   (printf "Web crawler for agents with service fallbacks~n")
-  (printf "Copyright (c) 2025 Anuna Research~n"))
+  (printf "Copyright (c) 2025 Anuna Research~n")
+  (printf "License: Apache-2.0~n")
+  (printf "https://codeberg.org/anuna/ar-crawl~n"))
 
 ;; @function{show-main-help}
 ;; @description{Display main help message with overview of all commands}
