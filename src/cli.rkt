@@ -16,6 +16,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
          racket/hash
          json
          net/url
+         net/base64
          "production-crawler.rkt"
          "config-manager.rkt"
          "crawl-service-adaptor.rkt"
@@ -1492,6 +1493,681 @@ Command-line interface for the web crawler for agents with service fallbacks.
    #:args remaining
    remaining))
 
+;; @function{parse-android-baseline-args}
+;; @description{Parse arguments for android baseline subcommand}
+(define android-baseline-device (make-parameter #f))
+(define android-baseline-output (make-parameter #f))
+(define android-baseline-name (make-parameter #f))
+(define android-baseline-apk (make-parameter #f))
+(define android-baseline-pkg (make-parameter #f))
+(define android-baseline-wait (make-parameter 2000))
+
+(define (parse-android-baseline-args args)
+  (command-line
+   #:program "ar-crawl android baseline"
+   #:argv args
+   #:once-each
+   [("-d" "--device") serial "Target device serial" (android-baseline-device serial)]
+   [("-o" "--output") file "Output file path for baseline image" (android-baseline-output file)]
+   [("-n" "--name") name "Baseline name/identifier" (android-baseline-name name)]
+   [("--apk") path "APK file to install before capturing" (android-baseline-apk path)]
+   [("-p" "--pkg") pkg "Package name to launch" (android-baseline-pkg pkg)]
+   [("-w" "--wait") ms "Wait time (ms) after launch (default: 2000)" (android-baseline-wait (string->number ms))]
+   #:args remaining
+   remaining))
+
+;; @function{parse-android-test-args}
+;; @description{Parse arguments for android test subcommand}
+(define android-test-device (make-parameter #f))
+(define android-test-pkg (make-parameter #f))
+(define android-test-stop-on-failure (make-parameter #t))
+(define android-test-step-delay (make-parameter 500))
+(define android-test-output (make-parameter #f))
+
+(define (parse-android-test-args args)
+  (command-line
+   #:program "ar-crawl android test"
+   #:argv args
+   #:once-each
+   [("-d" "--device") serial "Target device serial" (android-test-device serial)]
+   [("-p" "--pkg") pkg "Package name (optional, for crash detection)" (android-test-pkg pkg)]
+   [("--continue") "Continue running after failures" (android-test-stop-on-failure #f)]
+   [("--delay") ms "Delay between steps in ms (default: 500)" (android-test-step-delay (string->number ms))]
+   [("-o" "--output") file "Output results file (JSON)" (android-test-output file)]
+   #:args remaining
+   remaining))
+
+;; @function{parse-android-verify-args}
+;; @description{Parse arguments for android verify subcommand}
+(define android-verify-device (make-parameter #f))
+(define android-verify-baseline (make-parameter #f))
+(define android-verify-script (make-parameter #f))
+(define android-verify-pkg (make-parameter #f))
+(define android-verify-threshold (make-parameter 0))
+(define android-verify-wait (make-parameter 3000))
+(define android-verify-output (make-parameter #f))
+(define android-verify-continue (make-parameter #f))
+
+(define (parse-android-verify-args args)
+  (command-line
+   #:program "ar-crawl android verify"
+   #:argv args
+   #:once-each
+   [("-d" "--device") serial "Target device serial" (android-verify-device serial)]
+   [("-b" "--baseline") file "Baseline screenshot file to compare against" (android-verify-baseline file)]
+   [("-s" "--script") file "Test script file (JSON)" (android-verify-script file)]
+   [("-p" "--pkg") pkg "Package name (overrides APK package detection)" (android-verify-pkg pkg)]
+   [("-t" "--threshold") pct "Visual diff threshold percentage (default: 0)" (android-verify-threshold (string->number pct))]
+   [("-w" "--wait") ms "Wait time (ms) after launch before comparison (default: 3000)" (android-verify-wait (string->number ms))]
+   [("-o" "--output") file "Output results file (JSON)" (android-verify-output file)]
+   [("--continue") "Continue even if visual diff fails" (android-verify-continue #t)]
+   #:args remaining
+   remaining))
+
+;; @function{cmd-android-baseline}
+;; @description{Capture baseline screenshots for visual regression testing}
+(define (cmd-android-baseline #:device [device #f]
+                              #:output [output-file #f]
+                              #:name [baseline-name #f]
+                              #:apk [apk-path #f]
+                              #:pkg [pkg-name #f]
+                              #:wait [wait-time 2000]
+                              #:verbose [verbose #f])
+  (start-playwright-service #:verbose verbose)
+
+  (when verbose
+    (printf "Starting Android baseline capture...~n"))
+
+  (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+
+  ;; Get devices
+  (define devices-result
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to get Android devices: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (get-pure-port
+                    (string->url (string-append base-url "/android/devices"))))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+      data))
+
+  (define devices (hash-ref devices-result 'devices '()))
+
+  (when (null? devices)
+    (eprintf "~a: no Android devices found~n" (color-error "error"))
+    (eprintf "Connect a device or start an emulator, then run 'adb devices' to verify.~n")
+    (exit EXIT-ERROR))
+
+  ;; Select device
+  (define target-device
+    (if device
+        (findf (lambda (d) (equal? (hash-ref d 'serial) device)) devices)
+        (car devices)))
+
+  (unless target-device
+    (eprintf "~a: device not found: ~a~n" (color-error "error") device)
+    (eprintf "Available devices:~n")
+    (for ([d (in-list devices)])
+      (eprintf "  ~a (~a)~n" (hash-ref d 'serial) (hash-ref d 'model "")))
+    (exit EXIT-ERROR))
+
+  (define serial (hash-ref target-device 'serial))
+  (when verbose
+    (printf "Using device: ~a (~a)~n" serial (hash-ref target-device 'model "")))
+
+  ;; Create session
+  (define session-id
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to create Android session: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (post-pure-port
+                    (string->url (string-append base-url "/android/session/create"))
+                    (string->bytes/utf-8 (jsexpr->string (hash 'serial serial)))
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+
+      (when (hash-has-key? data 'error)
+        (eprintf "~a: ~a~n" (color-error "error") (hash-ref data 'error))
+        (exit EXIT-ERROR))
+
+      (hash-ref data 'sessionId)))
+
+  (when verbose
+    (printf "Session created: ~a~n" session-id))
+
+  ;; Helper to execute session actions
+  (define (session-action action)
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: action failed: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (hash 'error (exn-message e)))])
+      (define resp (post-pure-port
+                    (string->url (format "~a/android/session/~a/action" base-url session-id))
+                    (string->bytes/utf-8 (jsexpr->string action))
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+      data))
+
+  ;; Track effective package name (may be set from APK install)
+  (define effective-pkg pkg-name)
+
+  ;; Install APK if provided
+  (when apk-path
+    (when verbose
+      (printf "Installing APK: ~a~n" apk-path))
+    (define install-result (session-action (hash 'type "install"
+                                                  'apk apk-path
+                                                  'verify #t)))
+    (when (hash-ref install-result 'error #f)
+      (eprintf "~a: APK install failed: ~a~n"
+               (color-error "error") (hash-ref install-result 'error))
+      ;; Close session before exit
+      (with-handlers ([exn:fail? void])
+        (define resp (delete-pure-port
+                      (string->url (format "~a/android/session/~a" base-url session-id))))
+        (close-input-port resp))
+      (exit EXIT-ERROR))
+
+    (when (hash-ref install-result 'pkg #f)
+      (set! effective-pkg (hash-ref install-result 'pkg))
+      (when verbose
+        (printf "Installed package: ~a~n" effective-pkg))))
+
+  ;; Launch app if package specified
+  (when effective-pkg
+    (when verbose
+      (printf "Launching: ~a~n" effective-pkg))
+    (define launch-result (session-action (hash 'type "launchApp" 'pkg effective-pkg)))
+    (when (hash-ref launch-result 'error #f)
+      (eprintf "~a: launch failed: ~a~n"
+               (color-error "warning") (hash-ref launch-result 'error)))
+
+    (when verbose
+      (printf "Waiting ~a ms for app to settle...~n" wait-time))
+    (sleep (/ wait-time 1000.0)))
+
+  ;; Generate baseline name
+  (define name (or baseline-name
+                   (format "baseline-~a-~a"
+                           (or effective-pkg "screen")
+                           (current-seconds))))
+
+  (when verbose
+    (printf "Capturing baseline: ~a~n" name))
+
+  ;; Capture baseline
+  (define baseline-result
+    (session-action (hash 'type "captureBaseline"
+                          'name name
+                          'path output-file
+                          'metadata (hash 'pkg effective-pkg
+                                          'capturedAt (current-seconds)))))
+
+  (when (hash-ref baseline-result 'error #f)
+    (eprintf "~a: baseline capture failed: ~a~n"
+             (color-error "error") (hash-ref baseline-result 'error))
+    ;; Close session before exit
+    (with-handlers ([exn:fail? void])
+      (define resp (delete-pure-port
+                    (string->url (format "~a/android/session/~a" base-url session-id))))
+      (close-input-port resp))
+    (exit EXIT-ERROR))
+
+  ;; Close session
+  (with-handlers ([exn:fail? void])
+    (define resp (delete-pure-port
+                  (string->url (format "~a/android/session/~a" base-url session-id))))
+    (close-input-port resp))
+
+  ;; Output result
+  (define result-data
+    (hash 'status "captured"
+          'name name
+          'size (hash-ref baseline-result 'size 0)
+          'device serial
+          'pkg effective-pkg))
+
+  (when output-file
+    (set! result-data (hash-set result-data 'file output-file)))
+
+  (displayln (jsexpr->string result-data)))
+
+;; @function{cmd-android-test}
+;; @description{Run test scripts on Android devices}
+(define (cmd-android-test script-file
+                          #:device [device #f]
+                          #:pkg [pkg-name #f]
+                          #:stop-on-failure [stop-on-failure #t]
+                          #:step-delay [step-delay 500]
+                          #:output [output-file #f]
+                          #:verbose [verbose #f])
+  ;; Read script file
+  (unless (file-exists? script-file)
+    (eprintf "~a: script file not found: ~a~n" (color-error "error") script-file)
+    (exit EXIT-ERROR))
+
+  (define script-content (file->string script-file))
+  (define script-json
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: invalid JSON in script file: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (string->jsexpr script-content)))
+
+  ;; Start service
+  (start-playwright-service #:verbose verbose)
+
+  (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+
+  ;; Get devices
+  (define devices-result
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to get Android devices: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (get-pure-port
+                    (string->url (string-append base-url "/android/devices"))))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+      data))
+
+  (define devices (hash-ref devices-result 'devices '()))
+
+  (when (null? devices)
+    (eprintf "~a: no Android devices found~n" (color-error "error"))
+    (eprintf "Connect a device or start an emulator, then run 'adb devices' to verify.~n")
+    (exit EXIT-ERROR))
+
+  ;; Select device
+  (define target-device
+    (if device
+        (findf (lambda (d) (equal? (hash-ref d 'serial) device)) devices)
+        (car devices)))
+
+  (unless target-device
+    (eprintf "~a: device not found: ~a~n" (color-error "error") device)
+    (eprintf "Available devices:~n")
+    (for ([d (in-list devices)])
+      (eprintf "  ~a (~a)~n" (hash-ref d 'serial) (hash-ref d 'model "")))
+    (exit EXIT-ERROR))
+
+  (define serial (hash-ref target-device 'serial))
+  (eprintf "Using device: ~a (~a)~n" serial (hash-ref target-device 'model ""))
+
+  ;; Create session
+  (define session-id
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to create Android session: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (post-pure-port
+                    (string->url (string-append base-url "/android/session/create"))
+                    (string->bytes/utf-8 (jsexpr->string (hash 'serial serial)))
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+
+      (when (hash-has-key? data 'error)
+        (eprintf "~a: ~a~n" (color-error "error") (hash-ref data 'error))
+        (exit EXIT-ERROR))
+
+      (hash-ref data 'sessionId)))
+
+  (eprintf "Session: ~a~n" session-id)
+
+  ;; Helper to cleanup session
+  (define (cleanup)
+    (with-handlers ([exn:fail? void])
+      (define resp (delete-pure-port
+                    (string->url (format "~a/android/session/~a" base-url session-id))))
+      (close-input-port resp)))
+
+  ;; Helper to execute session actions
+  (define (session-action action)
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: action failed: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (hash 'error (exn-message e)))])
+      (define resp (post-pure-port
+                    (string->url (format "~a/android/session/~a/action" base-url session-id))
+                    (string->bytes/utf-8 (jsexpr->string action))
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+      data))
+
+  (define test-result #f)
+
+  (with-handlers ([exn:fail? (lambda (e)
+                               (cleanup)
+                               (eprintf "~a: ~a~n" (color-error "error") (exn-message e))
+                               (exit EXIT-ERROR))])
+
+    ;; Prepare test request
+    (define test-request
+      (if (hash-has-key? script-json 'steps)
+          ;; Script is already in test format
+          (hash-set* script-json
+                     'type "runTest"
+                     'stopOnFailure stop-on-failure
+                     'stepDelay step-delay)
+          ;; Wrap steps array in test format
+          (hash 'type "runTest"
+                'name (path->string (file-name-from-path script-file))
+                'steps script-json
+                'stopOnFailure stop-on-failure
+                'stepDelay step-delay)))
+
+    (eprintf "Running test: ~a~n" (hash-ref test-request 'name "unnamed"))
+    (eprintf "Steps: ~a~n" (length (hash-ref test-request 'steps '())))
+
+    ;; Run test
+    (set! test-result (session-action test-request))
+
+    ;; Check for crashes if package specified
+    (when pkg-name
+      (define crash-result (session-action (hash 'type "checkCrash" 'pkg pkg-name)))
+      (when (and test-result (hash? test-result))
+        (set! test-result (hash-set test-result 'crashCheck crash-result))))
+
+    ;; Cleanup
+    (cleanup))
+
+  ;; Output results
+  (define test-info (if (hash? test-result) (hash-ref test-result 'test (hash)) (hash)))
+  (define passed (hash-ref test-info 'passed #f))
+  (define steps-executed (hash-ref test-info 'stepsExecuted 0))
+  (define steps-passed (hash-ref test-info 'stepsPassed 0))
+
+  (eprintf "~n=== Test Results ===~n")
+  (eprintf "Status: ~a~n" (if passed "PASSED" "FAILED"))
+  (eprintf "Steps: ~a/~a passed~n" steps-passed steps-executed)
+
+  (when (and (not passed) (hash-ref test-info 'failedStep #f))
+    (eprintf "Failed at step: ~a~n" (hash-ref test-info 'failedStep))
+    (eprintf "Reason: ~a~n" (hash-ref test-info 'failureReason "")))
+
+  (eprintf "Duration: ~ams~n" (hash-ref test-info 'duration 0))
+
+  ;; Write output file if specified
+  (when output-file
+    (call-with-output-file output-file
+      (lambda (out) (write-json test-result out))
+      #:exists 'replace)
+    (eprintf "Results saved to: ~a~n" output-file))
+
+  ;; JSON output to stdout
+  (displayln (jsexpr->string (or test-result (hash 'error "no result"))))
+
+  (exit (if passed EXIT-SUCCESS EXIT-ERROR)))
+
+;; @function{cmd-android-verify}
+;; @description{Complete APK verification workflow: install, launch, visual compare, test, report}
+(define (cmd-android-verify apk-file
+                            #:device [device #f]
+                            #:baseline [baseline-file #f]
+                            #:script [script-file #f]
+                            #:pkg [pkg-override #f]
+                            #:threshold [threshold 0]
+                            #:wait [wait-time 3000]
+                            #:output [output-file #f]
+                            #:continue-on-visual-fail [continue-on-fail #f]
+                            #:verbose [verbose #f])
+  ;; Validate APK file exists
+  (unless (file-exists? apk-file)
+    (eprintf "~a: APK file not found: ~a~n" (color-error "error") apk-file)
+    (exit EXIT-ERROR))
+
+  ;; Start service
+  (start-playwright-service #:verbose verbose)
+
+  (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+
+  ;; Get devices
+  (define devices-result
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to get Android devices: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (get-pure-port
+                    (string->url (string-append base-url "/android/devices"))))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+      data))
+
+  (define devices (hash-ref devices-result 'devices '()))
+
+  (when (null? devices)
+    (eprintf "~a: no Android devices found~n" (color-error "error"))
+    (eprintf "Connect a device or start an emulator, then run 'adb devices' to verify.~n")
+    (exit EXIT-ERROR))
+
+  ;; Select device
+  (define target-device
+    (if device
+        (findf (lambda (d) (equal? (hash-ref d 'serial) device)) devices)
+        (car devices)))
+
+  (unless target-device
+    (eprintf "~a: device not found: ~a~n" (color-error "error") device)
+    (eprintf "Available devices:~n")
+    (for ([d (in-list devices)])
+      (eprintf "  ~a (~a)~n" (hash-ref d 'serial) (hash-ref d 'model "")))
+    (exit EXIT-ERROR))
+
+  (define serial (hash-ref target-device 'serial))
+  (eprintf "Using device: ~a (~a)~n" serial (hash-ref target-device 'model ""))
+
+  ;; Create session
+  (define session-id
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (eprintf "~a: failed to create Android session: ~a~n"
+                                          (color-error "error") (exn-message e))
+                                 (exit EXIT-ERROR))])
+      (define resp (post-pure-port
+                    (string->url (string-append base-url "/android/session/create"))
+                    (string->bytes/utf-8 (jsexpr->string (hash 'serial serial)))
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+
+      (when (hash-has-key? data 'error)
+        (eprintf "~a: ~a~n" (color-error "error") (hash-ref data 'error))
+        (exit EXIT-ERROR))
+
+      (hash-ref data 'sessionId)))
+
+  (eprintf "Session: ~a~n" session-id)
+
+  ;; Helper to cleanup session
+  (define (cleanup)
+    (with-handlers ([exn:fail? void])
+      (define resp (delete-pure-port
+                    (string->url (format "~a/android/session/~a" base-url session-id))))
+      (close-input-port resp)))
+
+  ;; Helper to execute session actions
+  (define (session-action action)
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (hash 'error (exn-message e) 'success #f))])
+      (define resp (post-pure-port
+                    (string->url (format "~a/android/session/~a/action" base-url session-id))
+                    (string->bytes/utf-8 (jsexpr->string action))
+                    (list "Content-Type: application/json")))
+      (define data (string->jsexpr (port->string resp)))
+      (close-input-port resp)
+      data))
+
+  ;; Results accumulator
+  (define results
+    (hash 'apk apk-file
+          'device serial
+          'timestamp (current-seconds)
+          'steps '()))
+
+  (define overall-passed #t)
+
+  (with-handlers ([exn:fail? (lambda (e)
+                               (cleanup)
+                               (eprintf "~a: ~a~n" (color-error "error") (exn-message e))
+                               (exit EXIT-ERROR))])
+
+    ;; Step 1: Install APK
+    (eprintf "~n=== Step 1: Installing APK ===~n")
+    (define install-result (session-action (hash 'type "installApk" 'path (path->string (simple-form-path apk-file)))))
+    (define install-success (hash-ref install-result 'success #f))
+    (define pkg-name (or pkg-override (hash-ref install-result 'package #f)))
+
+    (if install-success
+        (eprintf "  ✓ Installed: ~a~n" pkg-name)
+        (begin
+          (eprintf "  ✗ Install failed: ~a~n" (hash-ref install-result 'error "unknown"))
+          (set! overall-passed #f)))
+
+    (set! results (hash-set results 'install install-result))
+
+    (unless install-success
+      (cleanup)
+      (eprintf "~n~a: APK installation failed~n" (color-error "error"))
+      (exit EXIT-ERROR))
+
+    ;; Step 2: Launch app
+    (eprintf "~n=== Step 2: Launching App ===~n")
+    (define launch-result (session-action (hash 'type "launch" 'pkg pkg-name)))
+    (define launch-success (hash-ref launch-result 'success #f))
+
+    (if launch-success
+        (eprintf "  ✓ Launched: ~a~n" pkg-name)
+        (begin
+          (eprintf "  ✗ Launch failed: ~a~n" (hash-ref launch-result 'error "unknown"))
+          (set! overall-passed #f)))
+
+    (set! results (hash-set results 'launch launch-result))
+
+    (unless launch-success
+      (cleanup)
+      (eprintf "~n~a: App launch failed~n" (color-error "error"))
+      (exit EXIT-ERROR))
+
+    ;; Wait for app to stabilize
+    (eprintf "  Waiting ~ams for app to stabilize...~n" wait-time)
+    (sleep (/ wait-time 1000.0))
+
+    ;; Step 3: Visual comparison (if baseline provided)
+    (define visual-result #f)
+    (when baseline-file
+      (eprintf "~n=== Step 3: Visual Comparison ===~n")
+      (if (file-exists? baseline-file)
+          (let ()
+            ;; Load baseline image
+            (define baseline-data (file->bytes baseline-file))
+            (define baseline-b64 (bytes->string/utf-8 (base64-encode baseline-data)))
+
+            ;; Capture and compare current screenshot
+            (define compare-result
+              (session-action (hash 'type "compareScreenshot"
+                                    'baseline baseline-b64
+                                    'threshold threshold)))
+
+            (set! visual-result compare-result)
+            (define visual-passed (hash-ref compare-result 'success #f))
+            (define diff-percent (hash-ref compare-result 'diffPercent 100))
+
+            (if visual-passed
+                (eprintf "  ✓ Visual match (diff: ~a%, threshold: ~a%)~n" diff-percent threshold)
+                (begin
+                  (eprintf "  ✗ Visual mismatch (diff: ~a%, threshold: ~a%)~n" diff-percent threshold)
+                  (unless continue-on-fail
+                    (set! overall-passed #f)))))
+          (begin
+            (eprintf "  ⚠ Baseline file not found: ~a~n" baseline-file)
+            (set! visual-result (hash 'skipped #t 'reason "baseline file not found"))))
+
+      (set! results (hash-set results 'visual visual-result)))
+
+    ;; Step 4: Run test script (if provided)
+    (define test-result #f)
+    (when script-file
+      (eprintf "~n=== Step 4: Running Test Script ===~n")
+      (if (file-exists? script-file)
+          (let ()
+            (define script-content (file->string script-file))
+            (define script-json
+              (with-handlers ([exn:fail? (lambda (e)
+                                           (hash 'error (format "Invalid JSON: ~a" (exn-message e))))])
+                (string->jsexpr script-content)))
+
+            (when (hash? script-json)
+              (define test-request
+                (if (hash-has-key? script-json 'steps)
+                    (hash-set* script-json 'type "runTest" 'stopOnFailure #t)
+                    (hash 'type "runTest"
+                          'name (path->string (file-name-from-path script-file))
+                          'steps script-json
+                          'stopOnFailure #t)))
+
+              (set! test-result (session-action test-request))
+              (define test-info (hash-ref test-result 'test (hash)))
+              (define test-passed (hash-ref test-info 'passed #f))
+              (define steps-executed (hash-ref test-info 'stepsExecuted 0))
+              (define steps-passed (hash-ref test-info 'stepsPassed 0))
+
+              (if test-passed
+                  (eprintf "  ✓ Test passed (~a/~a steps)~n" steps-passed steps-executed)
+                  (begin
+                    (eprintf "  ✗ Test failed (~a/~a steps)~n" steps-passed steps-executed)
+                    (when (hash-ref test-info 'failedStep #f)
+                      (eprintf "    Failed at: ~a~n" (hash-ref test-info 'failedStep))
+                      (eprintf "    Reason: ~a~n" (hash-ref test-info 'failureReason "")))
+                    (set! overall-passed #f)))))
+          (begin
+            (eprintf "  ⚠ Script file not found: ~a~n" script-file)
+            (set! test-result (hash 'skipped #t 'reason "script file not found"))))
+
+      (set! results (hash-set results 'test test-result)))
+
+    ;; Step 5: Check for crashes
+    (eprintf "~n=== Step 5: Crash Detection ===~n")
+    (define crash-result (session-action (hash 'type "checkCrash" 'pkg pkg-name)))
+    (define has-crash (hash-ref crash-result 'crashed #f))
+    (define has-anr (hash-ref crash-result 'anr #f))
+
+    (if (or has-crash has-anr)
+        (begin
+          (eprintf "  ✗ Crash/ANR detected~n")
+          (when has-crash (eprintf "    Crash: ~a~n" (hash-ref crash-result 'crashMessage "")))
+          (when has-anr (eprintf "    ANR: ~a~n" (hash-ref crash-result 'anrMessage "")))
+          (set! overall-passed #f))
+        (eprintf "  ✓ No crashes detected~n"))
+
+    (set! results (hash-set results 'crashCheck crash-result))
+
+    ;; Cleanup
+    (cleanup))
+
+  ;; Final summary
+  (eprintf "~n========================================~n")
+  (eprintf "VERIFICATION ~a~n" (if overall-passed "PASSED" "FAILED"))
+  (eprintf "========================================~n")
+
+  (define final-results (hash-set results 'passed overall-passed))
+
+  ;; Write output file if specified
+  (when output-file
+    (call-with-output-file output-file
+      (lambda (out) (write-json final-results out))
+      #:exists 'replace)
+    (eprintf "Results saved to: ~a~n" output-file))
+
+  ;; JSON output to stdout
+  (displayln (jsexpr->string final-results))
+
+  (exit (if overall-passed EXIT-SUCCESS EXIT-ERROR)))
+
 ;; @function{parse-session-command}
 ;; @description{Parse a command string into a JSON action object}
 (define (parse-session-command cmd-str)
@@ -2618,11 +3294,14 @@ Command-line interface for the web crawler for agents with service fallbacks.
        [(android)
         (when (empty? post-cmd-args)
           (eprintf "~a: subcommand required for android command~n~n" (color-error "error"))
-          (eprintf "Subcommands: devices, session, replay~n~n")
+          (eprintf "Subcommands: devices, session, replay, baseline, test, verify~n~n")
           (eprintf "Usage:~n")
           (eprintf "  ar-crawl android devices              List connected Android devices~n")
           (eprintf "  ar-crawl android session <serial>     Start interactive session~n")
-          (eprintf "  ar-crawl android replay <file.json>   Replay a recording~n~n")
+          (eprintf "  ar-crawl android replay <file.json>   Replay a recording~n")
+          (eprintf "  ar-crawl android baseline [options]   Capture baseline screenshot~n")
+          (eprintf "  ar-crawl android test <script.json>   Run test scripts~n")
+          (eprintf "  ar-crawl android verify <app.apk>     Complete APK verification workflow~n~n")
           (eprintf "Run '~a' for more information.~n" (color-dim "ar-crawl help android"))
           (exit EXIT-USAGE))
 
@@ -2660,9 +3339,70 @@ Command-line interface for the web crawler for agents with service fallbacks.
                                  #:screenshots (android-replay-screenshots)
                                  #:verbose (verbose-mode)))]
 
+          [(baseline)
+           ;; Parse positional args - first non-option arg could be package or APK
+           (define positional-args (parse-android-baseline-args subcmd-args))
+           ;; If positional arg provided, treat as package or APK
+           (when (not (empty? positional-args))
+             (define arg (car positional-args))
+             (cond
+               [(string-suffix? arg ".apk")
+                (android-baseline-apk arg)]
+               [else
+                (android-baseline-pkg arg)]))
+           (with-playwright-cleanup
+             (cmd-android-baseline #:device (android-baseline-device)
+                                   #:output (android-baseline-output)
+                                   #:name (android-baseline-name)
+                                   #:apk (android-baseline-apk)
+                                   #:pkg (android-baseline-pkg)
+                                   #:wait (android-baseline-wait)
+                                   #:verbose (verbose-mode)))]
+
+          [(test)
+           (when (empty? subcmd-args)
+             (eprintf "~a: script file required for android test~n~n" (color-error "error"))
+             (eprintf "Usage: ar-crawl android test <script.json> [options]~n")
+             (exit EXIT-USAGE))
+           (define script-file (car subcmd-args))
+           (parse-android-test-args (cdr subcmd-args))
+           (with-playwright-cleanup
+             (cmd-android-test script-file
+                               #:device (android-test-device)
+                               #:pkg (android-test-pkg)
+                               #:stop-on-failure (android-test-stop-on-failure)
+                               #:step-delay (android-test-step-delay)
+                               #:output (android-test-output)
+                               #:verbose (verbose-mode)))]
+
+          [(verify)
+           (when (empty? subcmd-args)
+             (eprintf "~a: APK file required for android verify~n~n" (color-error "error"))
+             (eprintf "Usage: ar-crawl android verify <app.apk> [options]~n")
+             (eprintf "~nOptions:~n")
+             (eprintf "  -b, --baseline <file>    Baseline screenshot for visual comparison~n")
+             (eprintf "  -s, --script <file>      Test script (JSON) to execute~n")
+             (eprintf "  -d, --device <serial>    Target device serial~n")
+             (eprintf "  -t, --threshold <pct>    Visual diff threshold (default: 0)~n")
+             (eprintf "  -o, --output <file>      Output results file (JSON)~n")
+             (exit EXIT-USAGE))
+           (define apk-file (car subcmd-args))
+           (parse-android-verify-args (cdr subcmd-args))
+           (with-playwright-cleanup
+             (cmd-android-verify apk-file
+                                 #:device (android-verify-device)
+                                 #:baseline (android-verify-baseline)
+                                 #:script (android-verify-script)
+                                 #:pkg (android-verify-pkg)
+                                 #:threshold (android-verify-threshold)
+                                 #:wait (android-verify-wait)
+                                 #:output (android-verify-output)
+                                 #:continue-on-visual-fail (android-verify-continue)
+                                 #:verbose (verbose-mode)))]
+
           [else
            (eprintf "~a: unknown android subcommand '~a'~n" (color-error "error") subcmd)
-           (eprintf "~nAvailable subcommands: devices, session, replay~n")
+           (eprintf "~nAvailable subcommands: devices, session, replay, baseline, test, verify~n")
            (exit EXIT-USAGE)])]
 
        [(help)
@@ -3526,17 +4266,48 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "SUBCOMMANDS~n")
   (printf "  devices                     List connected Android devices~n")
   (printf "  session <serial>            Start interactive session on device~n")
-  (printf "  replay <file.json>          Replay a recording~n~n")
+  (printf "  replay <file.json>          Replay a recording~n")
+  (printf "  baseline [pkg|apk]          Capture baseline screenshot for visual regression~n")
+  (printf "  test <script.json>          Run test scripts for APK verification~n")
+  (printf "  verify <app.apk>            Complete APK verification workflow~n~n")
 
   (printf "USAGE~n")
   (printf "  ar-crawl android devices~n")
   (printf "  ar-crawl android session <device-serial>~n")
-  (printf "  ar-crawl android replay <recording.json> [options]~n~n")
+  (printf "  ar-crawl android replay <recording.json> [options]~n")
+  (printf "  ar-crawl android baseline [package|app.apk] [options]~n")
+  (printf "  ar-crawl android test <script.json> [options]~n")
+  (printf "  ar-crawl android verify <app.apk> [options]~n~n")
 
   (printf "REPLAY OPTIONS~n")
   (printf "  -d, --device <serial>       Target device (default: from recording)~n")
   (printf "  -s, --speed <multiplier>    Replay speed (default: 1.0)~n")
   (printf "      --screenshots           Capture screenshot per step~n~n")
+
+  (printf "BASELINE OPTIONS~n")
+  (printf "  -d, --device <serial>       Target device (default: first available)~n")
+  (printf "  -o, --output <file>         Output file path for baseline image~n")
+  (printf "  -n, --name <name>           Baseline name/identifier~n")
+  (printf "      --apk <path>            APK file to install before capturing~n")
+  (printf "  -p, --pkg <package>         Package name to launch~n")
+  (printf "  -w, --wait <ms>             Wait time after launch (default: 2000)~n~n")
+
+  (printf "TEST OPTIONS~n")
+  (printf "  -d, --device <serial>       Target device (default: first available)~n")
+  (printf "  -p, --pkg <package>         Package name (optional, for crash detection)~n")
+  (printf "      --continue              Continue running after failures~n")
+  (printf "      --delay <ms>            Delay between steps in ms (default: 500)~n")
+  (printf "  -o, --output <file>         Output results file (JSON)~n~n")
+
+  (printf "VERIFY OPTIONS~n")
+  (printf "  -d, --device <serial>       Target device (default: first available)~n")
+  (printf "  -b, --baseline <file>       Baseline screenshot for visual comparison~n")
+  (printf "  -s, --script <file>         Test script (JSON) to execute~n")
+  (printf "  -p, --pkg <package>         Package name (overrides APK detection)~n")
+  (printf "  -t, --threshold <pct>       Visual diff threshold percentage (default: 0)~n")
+  (printf "  -w, --wait <ms>             Wait time after launch (default: 3000)~n")
+  (printf "  -o, --output <file>         Output results file (JSON)~n")
+  (printf "      --continue              Continue even if visual diff fails~n~n")
 
   (printf "SESSION COMMANDS (stdin)~n")
   (printf "  {\"type\": \"...\", ...}        Execute Android action (JSON)~n")
@@ -3603,6 +4374,38 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
   (printf "  # Replay on another device~n")
   (printf "  $ ar-crawl android replay mobile-flow.json -d emulator-5556~n~n")
+
+  (printf "  # Capture baseline screenshot~n")
+  (printf "  $ ar-crawl android baseline com.example.app -o baseline.png~n")
+  (printf "  {\"status\":\"captured\",\"name\":\"baseline-com.example.app-1234\",\"size\":45678}~n~n")
+
+  (printf "  # Capture baseline from APK~n")
+  (printf "  $ ar-crawl android baseline app-debug.apk -n initial-state~n~n")
+
+  (printf "  # Run test script~n")
+  (printf "  $ ar-crawl android test tests.json -d emulator-5554~n")
+  (printf "  {\"test\":{\"passed\":true,\"stepsExecuted\":5,\"stepsPassed\":5,\"duration\":2340}}~n~n")
+
+  (printf "  # Run test with crash detection~n")
+  (printf "  $ ar-crawl android test tests.json -p com.example.app -o results.json~n~n")
+
+  (printf "  # Complete APK verification workflow~n")
+  (printf "  $ ar-crawl android verify app-debug.apk -b baseline.png -s tests.json~n")
+  (printf "  === Step 1: Installing APK ===~n")
+  (printf "    ✓ Installed: com.example.app~n")
+  (printf "  === Step 2: Launching App ===~n")
+  (printf "    ✓ Launched: com.example.app~n")
+  (printf "  === Step 3: Visual Comparison ===~n")
+  (printf "    ✓ Visual match (diff: 0.00%, threshold: 0%)~n")
+  (printf "  === Step 4: Running Test Script ===~n")
+  (printf "    ✓ Test passed (5/5 steps)~n")
+  (printf "  === Step 5: Crash Detection ===~n")
+  (printf "    ✓ No crashes detected~n")
+  (printf "  ========================================~n")
+  (printf "  VERIFICATION PASSED~n~n")
+
+  (printf "  # Verify with custom threshold~n")
+  (printf "  $ ar-crawl android verify app.apk -b baseline.png -t 5 --continue~n~n")
 
   (printf "RECORDING FORMAT~n")
   (printf "  Android recordings include device metadata:~n")

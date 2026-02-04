@@ -1914,6 +1914,483 @@ Metrics for latency percentiles, concurrency, memory, resilience, and accuracy a
 
 ---
 
+## APK Verification API Endpoints
+
+The following endpoints were added to support LLM agent APK verification workflows.
+
+### CON-013: App Launch Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/action`
+
+**Purpose:** Launch an installed app by package name.
+
+**Request Body:**
+```json
+{
+  "type": "launch",
+  "pkg": "com.example.app"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "launch",
+  "package": "com.example.app"
+}
+```
+
+---
+
+### CON-014: App State Endpoint
+
+**Endpoint:** `GET /android/session/{sessionId}/app-state`
+
+**Purpose:** Enhanced state inspection - activity stack, UI hierarchy dump.
+
+**Response (200 OK):**
+```json
+{
+  "package": "com.example.app",
+  "activity": "com.example.app.MainActivity",
+  "activityStack": ["MainActivity", "SettingsActivity"],
+  "hierarchy": {...},
+  "memoryUsage": 45678000,
+  "cpuUsage": 12.5
+}
+```
+
+---
+
+### CON-015: Element Assertions Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/assert`
+
+**Purpose:** Assert element properties - exists, visible, text, enabled.
+
+**Request Body:**
+```json
+{
+  "selector": "res=com.example:id/button",
+  "assertions": {
+    "exists": true,
+    "visible": true,
+    "enabled": true,
+    "text": "Submit"
+  },
+  "strict": true
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "assert",
+  "passed": true,
+  "results": {
+    "exists": { "expected": true, "actual": true, "passed": true },
+    "visible": { "expected": true, "actual": true, "passed": true },
+    "enabled": { "expected": true, "actual": true, "passed": true },
+    "text": { "expected": "Submit", "actual": "Submit", "passed": true }
+  }
+}
+```
+
+---
+
+### CON-016: APK Uninstall Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/action`
+
+**Purpose:** Uninstall an app by package name.
+
+**Request Body:**
+```json
+{
+  "type": "uninstall",
+  "pkg": "com.example.app"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "uninstall",
+  "package": "com.example.app"
+}
+```
+
+---
+
+### CON-017: List Packages Endpoint
+
+**Endpoint:** `GET /android/session/{sessionId}/packages`
+
+**Purpose:** List installed packages with version info.
+
+**Response (200 OK):**
+```json
+{
+  "packages": [
+    {
+      "package": "com.example.app",
+      "version": "1.2.3",
+      "versionCode": 123,
+      "installedAt": "2026-01-15T10:30:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### CON-018: Clear App Data Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/action`
+
+**Purpose:** Clear app data for fresh state testing.
+
+**Request Body:**
+```json
+{
+  "type": "clearData",
+  "pkg": "com.example.app"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "clearData",
+  "package": "com.example.app"
+}
+```
+
+---
+
+### CON-019: Baseline Capture Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/action`
+
+**Purpose:** Capture and store baseline screenshots with metadata.
+
+**Request Body:**
+```json
+{
+  "type": "captureBaseline",
+  "name": "login-screen",
+  "metadata": {
+    "description": "Initial login screen state"
+  }
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "captureBaseline",
+  "baseline": {
+    "name": "login-screen",
+    "timestamp": 1705320600000,
+    "size": 245678,
+    "dimensions": { "width": 1080, "height": 2400 }
+  }
+}
+```
+
+---
+
+### CON-020: Screenshot Comparison Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/compare`
+
+**Purpose:** Compare current screenshot against baseline with diff metrics.
+
+**Request Body:**
+```json
+{
+  "baseline": "base64-encoded-image-data",
+  "baselineName": "login-screen",
+  "threshold": 5,
+  "selector": "res=main_content",
+  "includeScreenshots": true
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "compareScreenshot",
+  "identical": false,
+  "diffPercent": "2.34",
+  "threshold": 5,
+  "passed": true,
+  "analysis": {
+    "totalBytes": 245678,
+    "changedBytes": 5678,
+    "changeRegions": [
+      { "start": 1000, "end": 2500 }
+    ]
+  }
+}
+```
+
+---
+
+### CON-021: Visual Diff Report Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/diff-report`
+
+**Purpose:** Generate visual diff report with highlighted differences.
+
+**Request Body:**
+```json
+{
+  "baseline": "login-screen",
+  "comparisons": [
+    { "baseline": "home-screen", "name": "Home" },
+    { "baseline": "settings-screen", "name": "Settings" }
+  ],
+  "threshold": 5,
+  "format": "html",
+  "path": "/tmp/report.html"
+}
+```
+
+**Response (200 OK - JSON):**
+```json
+{
+  "success": true,
+  "action": "generateDiffReport",
+  "report": {
+    "timestamp": 1705320600000,
+    "summary": {
+      "total": 3,
+      "passed": 2,
+      "failed": 1
+    },
+    "comparisons": [
+      {
+        "baseline": "login-screen",
+        "passed": true,
+        "diffPercent": "0.50",
+        "threshold": 5
+      }
+    ],
+    "savedTo": "/tmp/report.html"
+  }
+}
+```
+
+**Response (200 OK - HTML when format=html):**
+Returns HTML report directly with Content-Type: text/html.
+
+---
+
+### CON-022: Test Script Execution Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/test`
+
+**Purpose:** Execute sequence of actions with assertions - pass/fail result.
+
+**Request Body:**
+```json
+{
+  "name": "Login Flow Test",
+  "steps": [
+    { "type": "tap", "selector": "res=username" },
+    { "type": "fill", "selector": "res=username", "text": "testuser" },
+    { "type": "tap", "selector": "res=password" },
+    { "type": "fill", "selector": "res=password", "text": "secret" },
+    { "type": "tap", "selector": "text=Login" },
+    { "type": "assert", "selector": "text=Welcome", "assertions": { "visible": true } }
+  ],
+  "stopOnFailure": true,
+  "stepDelay": 500
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "runTest",
+  "test": {
+    "name": "Login Flow Test",
+    "passed": true,
+    "stepsExecuted": 6,
+    "stepsPassed": 6,
+    "duration": 3450,
+    "results": [
+      { "step": 0, "type": "tap", "passed": true, "duration": 120 },
+      { "step": 1, "type": "fill", "passed": true, "duration": 80 }
+    ]
+  }
+}
+```
+
+---
+
+### CON-023: Wait Conditions Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/wait-for`
+
+**Purpose:** Wait for element/text/activity conditions before proceeding.
+
+**Request Body:**
+```json
+{
+  "selector": "text=Loading",
+  "text": "Welcome",
+  "textGone": "Loading...",
+  "activity": "com.example.MainActivity",
+  "pkg": "com.example.app",
+  "state": "visible",
+  "timeout": 10000,
+  "interval": 500
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "waitFor",
+  "condition": "text",
+  "found": true,
+  "duration": 2340
+}
+```
+
+**Response (408 Timeout):**
+```json
+{
+  "error": "Wait condition timed out after 10000ms",
+  "timedOut": true
+}
+```
+
+---
+
+### CON-024: Crash Detection Endpoint
+
+**Endpoint:** `POST /android/session/{sessionId}/action`
+
+**Purpose:** Detect ANR, crashes, and capture logcat on failure.
+
+**Request Body:**
+```json
+{
+  "type": "checkCrash",
+  "pkg": "com.example.app"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "action": "checkCrash",
+  "crashed": false,
+  "anr": false,
+  "package": "com.example.app"
+}
+```
+
+**Response (200 OK - Crash Detected):**
+```json
+{
+  "success": true,
+  "action": "checkCrash",
+  "crashed": true,
+  "anr": false,
+  "crashMessage": "java.lang.NullPointerException at com.example.app.MainActivity.onCreate",
+  "logcat": "...",
+  "package": "com.example.app"
+}
+```
+
+---
+
+### CON-025: Performance Metrics
+
+**Included in:** `GET /android/session/{sessionId}/app-state`
+
+**Purpose:** Capture app launch time, frame rate, memory usage.
+
+**Additional Response Fields:**
+```json
+{
+  "performance": {
+    "launchTime": 1234,
+    "frameRate": 60,
+    "droppedFrames": 2,
+    "memoryUsage": 45678000,
+    "cpuUsage": 12.5
+  }
+}
+```
+
+---
+
+### CLI: android verify Command
+
+**Usage:** `ar-crawl android verify <app.apk> [options]`
+
+**Purpose:** Complete APK verification workflow combining install, launch, visual comparison, test execution, and crash detection.
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `-d, --device <serial>` | Target device serial |
+| `-b, --baseline <file>` | Baseline screenshot for visual comparison |
+| `-s, --script <file>` | Test script (JSON) to execute |
+| `-p, --pkg <package>` | Package name (overrides APK detection) |
+| `-t, --threshold <pct>` | Visual diff threshold percentage (default: 0) |
+| `-w, --wait <ms>` | Wait time after launch (default: 3000) |
+| `-o, --output <file>` | Output results file (JSON) |
+| `--continue` | Continue even if visual diff fails |
+
+**Example:**
+```bash
+ar-crawl android verify app-debug.apk -b baseline.png -s tests.json -o results.json
+```
+
+**Output:**
+```
+Using device: emulator-5554 (sdk_gphone64)
+Session: android-abc123
+
+=== Step 1: Installing APK ===
+  ✓ Installed: com.example.app
+
+=== Step 2: Launching App ===
+  ✓ Launched: com.example.app
+  Waiting 3000ms for app to stabilize...
+
+=== Step 3: Visual Comparison ===
+  ✓ Visual match (diff: 0.00%, threshold: 0%)
+
+=== Step 4: Running Test Script ===
+  ✓ Test passed (5/5 steps)
+
+=== Step 5: Crash Detection ===
+  ✓ No crashes detected
+
+========================================
+VERIFICATION PASSED
+========================================
+Results saved to: results.json
+```
+
+---
+
 ## References
 
 - [Playwright Android API](https://playwright.dev/docs/api/class-android)

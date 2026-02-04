@@ -1,0 +1,526 @@
+;; Android APK Verification Plan for LLM Agents
+;; Goal: Enable LLM agents to launch APKs, verify code fixes,
+;;       detect visual regressions, and test functionality
+
+;; ============================================================
+;; AGENTS
+;; ============================================================
+
+(given agent-core-available)          ; Core Android infrastructure
+(given agent-apk-available)           ; APK management features
+(given agent-visual-available)        ; Visual regression detection
+(given agent-assertions-available)    ; Assertions and verification
+(given agent-cli-available)           ; CLI command integration
+(given agent-docs-available)          ; Documentation
+
+;; ============================================================
+;; PHASE 1: CORE INFRASTRUCTURE
+;; ============================================================
+
+;; Task: App Launcher API
+(given task-app-launcher)
+(given no-deps-app-launcher)
+(meta task-app-launcher
+  (description "Add app launch capability - start installed apps by package name")
+  (deliverable "POST /android/session/{id}/launch endpoint"))
+
+;; Task: App State Inspector
+(given task-app-state)
+(given no-deps-app-state)
+(meta task-app-state
+  (description "Enhanced state inspection - activity stack, UI hierarchy dump")
+  (deliverable "GET /android/session/{id}/app-state endpoint"))
+
+;; Task: Element Assertions
+(given task-element-assertions)
+(meta task-element-assertions
+  (description "Assert element properties - exists, visible, text, enabled")
+  (deliverable "POST /android/session/{id}/assert endpoint"))
+
+;; ============================================================
+;; PHASE 2: APK MANAGEMENT
+;; ============================================================
+
+;; Task: APK Install with Verification
+(given task-apk-install-verify)
+(given no-deps-apk-install-verify)
+(meta task-apk-install-verify
+  (description "Enhance APK install to verify success and return package info")
+  (deliverable "Enhanced POST /android/session/{id}/install"))
+
+;; Task: APK Uninstall
+(given task-apk-uninstall)
+(given no-deps-apk-uninstall)
+(meta task-apk-uninstall
+  (description "Add APK uninstall capability for clean testing")
+  (deliverable "POST /android/session/{id}/uninstall endpoint"))
+
+;; Task: List Installed Apps
+(given task-list-apps)
+(given no-deps-list-apps)
+(meta task-list-apps
+  (description "List installed packages with version info")
+  (deliverable "GET /android/session/{id}/packages endpoint"))
+
+;; Task: Clear App Data
+(given task-clear-data)
+(given no-deps-clear-data)
+(meta task-clear-data
+  (description "Clear app data for fresh state testing")
+  (deliverable "POST /android/session/{id}/clear-data endpoint"))
+
+;; ============================================================
+;; PHASE 3: VISUAL REGRESSION
+;; ============================================================
+
+;; Task: Baseline Screenshot Capture
+(given task-baseline-capture)
+(meta task-baseline-capture
+  (description "Capture and store baseline screenshots with metadata")
+  (deliverable "POST /android/session/{id}/baseline endpoint"))
+
+;; Task: Screenshot Comparison
+(given task-screenshot-diff)
+(meta task-screenshot-diff
+  (description "Compare current screenshot against baseline with diff metrics")
+  (deliverable "POST /android/session/{id}/compare endpoint"))
+
+;; Task: Visual Diff Report
+(given task-visual-report)
+(meta task-visual-report
+  (description "Generate visual diff report with highlighted differences")
+  (deliverable "Diff image generation and threshold configuration"))
+
+;; Task: Element Screenshot
+(given task-element-screenshot)
+(meta task-element-screenshot
+  (description "Screenshot specific elements by selector for targeted comparison")
+  (deliverable "Element-specific screenshot in existing endpoint"))
+
+;; ============================================================
+;; PHASE 4: FUNCTIONALITY VERIFICATION
+;; ============================================================
+
+;; Task: Test Script Execution
+(given task-test-script)
+(meta task-test-script
+  (description "Execute sequence of actions with assertions - pass/fail result")
+  (deliverable "POST /android/session/{id}/test endpoint"))
+
+;; Task: Wait Conditions
+(given task-wait-conditions)
+(meta task-wait-conditions
+  (description "Wait for element/text/activity conditions before proceeding")
+  (deliverable "POST /android/session/{id}/wait-for endpoint"))
+
+;; Task: Performance Metrics
+(given task-perf-metrics)
+(meta task-perf-metrics
+  (description "Capture app launch time, frame rate, memory usage")
+  (deliverable "Performance data in app-state response"))
+
+;; Task: Crash Detection
+(given task-crash-detection)
+(meta task-crash-detection
+  (description "Detect ANR, crashes, and capture logcat on failure")
+  (deliverable "Crash detection in action responses"))
+
+;; ============================================================
+;; PHASE 5: CLI INTEGRATION
+;; ============================================================
+
+;; Task: CLI Verify Command
+(given task-cli-verify)
+(meta task-cli-verify
+  (description "ar-crawl android verify <apk> --baseline <file> --script <file>")
+  (deliverable "New CLI command for complete verification workflow"))
+
+;; Task: CLI Baseline Command
+(given task-cli-baseline)
+(meta task-cli-baseline
+  (description "ar-crawl android baseline <apk> --output <file>")
+  (deliverable "CLI command to capture baseline screenshots"))
+
+;; Task: CLI Test Command
+(given task-cli-test)
+(meta task-cli-test
+  (description "ar-crawl android test <script.json> --device <serial>")
+  (deliverable "CLI command to run test scripts"))
+
+;; ============================================================
+;; PHASE 6: DOCUMENTATION
+;; ============================================================
+
+;; Task: API Documentation
+(given task-api-docs)
+(meta task-api-docs
+  (description "Document all new Android API endpoints")
+  (deliverable "Updated API documentation in specs"))
+
+;; Task: LLM Agent Guide
+(given task-llm-guide)
+(meta task-llm-guide
+  (description "Guide for LLM agents on APK verification workflow")
+  (deliverable "docs/llm-android-verification.md"))
+
+;; ============================================================
+;; COMPLETION TRACKING (asserted when tasks complete)
+;; These are asserted via: hence complete <file> <task>
+;; ============================================================
+
+;; Completion facts will be dynamically asserted:
+;; (given done-app-launcher)
+;; (given done-app-state)
+;; etc.
+
+;; Completion derivation rules
+(normally r-completed-app-launcher done-app-launcher completed-app-launcher)
+(normally r-completed-app-state done-app-state completed-app-state)
+(normally r-completed-element-assertions done-element-assertions completed-element-assertions)
+(normally r-completed-apk-install-verify done-apk-install-verify completed-apk-install-verify)
+(normally r-completed-apk-uninstall done-apk-uninstall completed-apk-uninstall)
+(normally r-completed-list-apps done-list-apps completed-list-apps)
+(normally r-completed-clear-data done-clear-data completed-clear-data)
+(normally r-completed-baseline-capture done-baseline-capture completed-baseline-capture)
+(normally r-completed-screenshot-diff done-screenshot-diff completed-screenshot-diff)
+(normally r-completed-visual-report done-visual-report completed-visual-report)
+(normally r-completed-element-screenshot done-element-screenshot completed-element-screenshot)
+(normally r-completed-test-script done-test-script completed-test-script)
+(normally r-completed-wait-conditions done-wait-conditions completed-wait-conditions)
+(normally r-completed-perf-metrics done-perf-metrics completed-perf-metrics)
+(normally r-completed-crash-detection done-crash-detection completed-crash-detection)
+(normally r-completed-cli-verify done-cli-verify completed-cli-verify)
+(normally r-completed-cli-baseline done-cli-baseline completed-cli-baseline)
+(normally r-completed-cli-test done-cli-test completed-cli-test)
+(normally r-completed-api-docs done-api-docs completed-api-docs)
+(normally r-completed-llm-guide done-llm-guide completed-llm-guide)
+
+;; ============================================================
+;; READINESS RULES
+;; ============================================================
+
+;; Phase 1 - Core Infrastructure (no dependencies, ready immediately)
+(normally r-ready-app-launcher
+  (and task-app-launcher no-deps-app-launcher)
+  ready-app-launcher)
+
+(normally r-ready-app-state
+  (and task-app-state no-deps-app-state)
+  ready-app-state)
+
+(normally r-ready-element-assertions
+  (and task-element-assertions completed-app-state)
+  ready-element-assertions)
+
+;; Phase 2 - APK Management (no dependencies, ready immediately)
+(normally r-ready-apk-install
+  (and task-apk-install-verify no-deps-apk-install-verify)
+  ready-apk-install-verify)
+
+(normally r-ready-apk-uninstall
+  (and task-apk-uninstall no-deps-apk-uninstall)
+  ready-apk-uninstall)
+
+(normally r-ready-list-apps
+  (and task-list-apps no-deps-list-apps)
+  ready-list-apps)
+
+(normally r-ready-clear-data
+  (and task-clear-data no-deps-clear-data)
+  ready-clear-data)
+
+;; Phase 3 - Visual Regression (depends on core)
+(normally r-ready-baseline
+  (and task-baseline-capture completed-app-launcher)
+  ready-baseline-capture)
+
+(normally r-ready-diff
+  (and task-screenshot-diff completed-baseline-capture)
+  ready-screenshot-diff)
+
+(normally r-ready-visual-report
+  (and task-visual-report completed-screenshot-diff)
+  ready-visual-report)
+
+(normally r-ready-element-ss
+  (and task-element-screenshot completed-app-state)
+  ready-element-screenshot)
+
+;; Phase 4 - Functionality (depends on assertions/state)
+(normally r-ready-test-script
+  (and task-test-script completed-element-assertions)
+  ready-test-script)
+
+(normally r-ready-wait
+  (and task-wait-conditions completed-app-state)
+  ready-wait-conditions)
+
+(normally r-ready-perf
+  (and task-perf-metrics completed-app-launcher)
+  ready-perf-metrics)
+
+(normally r-ready-crash
+  (and task-crash-detection completed-app-state)
+  ready-crash-detection)
+
+;; Phase 5 - CLI (depends on functionality)
+(normally r-ready-cli-verify
+  (and task-cli-verify
+       completed-test-script
+       completed-screenshot-diff
+       completed-crash-detection)
+  ready-cli-verify)
+
+(normally r-ready-cli-baseline
+  (and task-cli-baseline completed-baseline-capture)
+  ready-cli-baseline)
+
+(normally r-ready-cli-test
+  (and task-cli-test completed-test-script)
+  ready-cli-test)
+
+;; Phase 6 - Docs (depends on CLI)
+(normally r-ready-api-docs
+  (and task-api-docs
+       completed-cli-verify
+       completed-cli-baseline
+       completed-cli-test)
+  ready-api-docs)
+
+(normally r-ready-llm-guide
+  (and task-llm-guide completed-api-docs)
+  ready-llm-guide)
+
+;; ============================================================
+;; ASSIGNMENT RULES
+;; ============================================================
+
+;; Core agent handles infrastructure tasks
+(normally r-assign-core-launcher
+  (and ready-app-launcher agent-core-available)
+  assign-to-app-launcher-core)
+
+(normally r-assign-core-state
+  (and ready-app-state agent-core-available)
+  assign-to-app-state-core)
+
+;; Assertions agent handles verification features
+(normally r-assign-assertions
+  (and ready-element-assertions agent-assertions-available)
+  assign-to-element-assertions-assertions)
+
+(normally r-assign-assertions-wait
+  (and ready-wait-conditions agent-assertions-available)
+  assign-to-wait-conditions-assertions)
+
+(normally r-assign-assertions-crash
+  (and ready-crash-detection agent-assertions-available)
+  assign-to-crash-detection-assertions)
+
+;; APK agent handles package management
+(normally r-assign-apk-install
+  (and ready-apk-install-verify agent-apk-available)
+  assign-to-apk-install-apk)
+
+(normally r-assign-apk-uninstall
+  (and ready-apk-uninstall agent-apk-available)
+  assign-to-apk-uninstall-apk)
+
+(normally r-assign-apk-list
+  (and ready-list-apps agent-apk-available)
+  assign-to-list-apps-apk)
+
+(normally r-assign-apk-clear
+  (and ready-clear-data agent-apk-available)
+  assign-to-clear-data-apk)
+
+;; Visual agent handles screenshot comparison
+(normally r-assign-visual-baseline
+  (and ready-baseline-capture agent-visual-available)
+  assign-to-baseline-capture-visual)
+
+(normally r-assign-visual-diff
+  (and ready-screenshot-diff agent-visual-available)
+  assign-to-screenshot-diff-visual)
+
+(normally r-assign-visual-report
+  (and ready-visual-report agent-visual-available)
+  assign-to-visual-report-visual)
+
+(normally r-assign-visual-element
+  (and ready-element-screenshot agent-visual-available)
+  assign-to-element-screenshot-visual)
+
+;; Core handles test script and perf
+(normally r-assign-core-test
+  (and ready-test-script agent-core-available)
+  assign-to-test-script-core)
+
+(normally r-assign-core-perf
+  (and ready-perf-metrics agent-core-available)
+  assign-to-perf-metrics-core)
+
+;; CLI agent handles CLI integration
+(normally r-assign-cli-verify
+  (and ready-cli-verify agent-cli-available)
+  assign-to-cli-verify-cli)
+
+(normally r-assign-cli-baseline
+  (and ready-cli-baseline agent-cli-available)
+  assign-to-cli-baseline-cli)
+
+(normally r-assign-cli-test
+  (and ready-cli-test agent-cli-available)
+  assign-to-cli-test-cli)
+
+;; Docs agent handles documentation
+(normally r-assign-docs-api
+  (and ready-api-docs agent-docs-available)
+  assign-to-api-docs-docs)
+
+(normally r-assign-docs-guide
+  (and ready-llm-guide agent-docs-available)
+  assign-to-llm-guide-docs)
+
+;; ============================================================
+;; PROJECT COMPLETION
+;; ============================================================
+
+(normally r-phase1-complete
+  (and completed-app-launcher
+       completed-app-state
+       completed-element-assertions)
+  phase1-complete)
+
+(normally r-phase2-complete
+  (and completed-apk-install-verify
+       completed-apk-uninstall
+       completed-list-apps
+       completed-clear-data)
+  phase2-complete)
+
+(normally r-phase3-complete
+  (and completed-baseline-capture
+       completed-screenshot-diff
+       completed-visual-report
+       completed-element-screenshot)
+  phase3-complete)
+
+(normally r-phase4-complete
+  (and completed-test-script
+       completed-wait-conditions
+       completed-perf-metrics
+       completed-crash-detection)
+  phase4-complete)
+
+(normally r-phase5-complete
+  (and completed-cli-verify
+       completed-cli-baseline
+       completed-cli-test)
+  phase5-complete)
+
+(normally r-phase6-complete
+  (and completed-api-docs
+       completed-llm-guide)
+  phase6-complete)
+
+(normally r-project-complete
+  (and phase1-complete
+       phase2-complete
+       phase3-complete
+       phase4-complete
+       phase5-complete
+       phase6-complete)
+  project-complete)
+
+(claims agent:coordinator
+  :at "2026-20-50T90:29:13Z"
+  (given done-app-launcher))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:29:13Z"
+  (given done-app-state))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:29:14Z"
+  (given done-apk-install-verify))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:29:14Z"
+  (given done-apk-uninstall))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:29:15Z"
+  (given done-list-apps))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:29:15Z"
+  (given done-clear-data))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:35:10Z"
+  (given done-element-assertions))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:35:10Z"
+  (given done-baseline-capture))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:35:10Z"
+  (given done-wait-conditions))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:35:11Z"
+  (given done-perf-metrics))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:35:11Z"
+  (given done-crash-detection))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:35:11Z"
+  (given done-element-screenshot))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:39:26Z"
+  (given done-test-script))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:39:27Z"
+  (given done-screenshot-diff))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:39:27Z"
+  (given done-cli-baseline))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:53:41Z"
+  (given completed-visual-report))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:53:43Z"
+  (given completed-cli-test))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:53:54Z"
+  (given claimed-cli-verify))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:56:31Z"
+  (given completed-cli-verify))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:56:43Z"
+  (given claimed-api-docs))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:57:54Z"
+  (given completed-api-docs))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:58:60Z"
+  (given claimed-llm-guide))
+
+(claims agent:coordinator
+  :at "2026-20-50T90:58:57Z"
+  (given completed-llm-guide))
