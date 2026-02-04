@@ -80,10 +80,29 @@ ar-crawl android verify app-debug.apk \
 | `-b, --baseline <file>` | Baseline screenshot for visual comparison |
 | `-s, --script <file>` | Test script (JSON) |
 | `-d, --device <serial>` | Target device |
+| `-p, --pkg <package>` | Package name (required with --skip-install) |
 | `-t, --threshold <pct>` | Visual diff threshold (default: 0%) |
 | `-w, --wait <ms>` | Wait after launch (default: 3000ms) |
 | `-o, --output <file>` | Results file (JSON) |
 | `--continue` | Continue if visual diff fails |
+| `--skip-install` | Skip APK install, test already-running app |
+
+### 2b. Test Running App (Expo Dev Mode)
+
+Skip APK installation and test against an already-running app:
+
+```bash
+# Start your Expo app first, then:
+ar-crawl android verify --skip-install \
+  --pkg com.bgovlifecert.bgovlifecertfrontend \
+  -b baseline.png \
+  -s tests.json
+```
+
+This is useful for:
+- Expo development builds running via `expo start`
+- Apps already installed on the device
+- Faster iteration during development
 
 ### 3. Run Tests Only
 

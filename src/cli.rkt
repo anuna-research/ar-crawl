@@ -1547,6 +1547,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 (define android-verify-wait (make-parameter 3000))
 (define android-verify-output (make-parameter #f))
 (define android-verify-continue (make-parameter #f))
+(define android-verify-skip-install (make-parameter #f))
 
 (define (parse-android-verify-args args)
   (command-line
@@ -1556,11 +1557,12 @@ Command-line interface for the web crawler for agents with service fallbacks.
    [("-d" "--device") serial "Target device serial" (android-verify-device serial)]
    [("-b" "--baseline") file "Baseline screenshot file to compare against" (android-verify-baseline file)]
    [("-s" "--script") file "Test script file (JSON)" (android-verify-script file)]
-   [("-p" "--pkg") pkg "Package name (overrides APK package detection)" (android-verify-pkg pkg)]
+   [("-p" "--pkg") pkg "Package name (required with --skip-install)" (android-verify-pkg pkg)]
    [("-t" "--threshold") pct "Visual diff threshold percentage (default: 0)" (android-verify-threshold (string->number pct))]
    [("-w" "--wait") ms "Wait time (ms) after launch before comparison (default: 3000)" (android-verify-wait (string->number ms))]
    [("-o" "--output") file "Output results file (JSON)" (android-verify-output file)]
    [("--continue") "Continue even if visual diff fails" (android-verify-continue #t)]
+   [("--skip-install") "Skip APK install, connect to running app (requires --pkg)" (android-verify-skip-install #t)]
    #:args remaining
    remaining))
 
@@ -1916,11 +1918,18 @@ Command-line interface for the web crawler for agents with service fallbacks.
                             #:wait [wait-time 3000]
                             #:output [output-file #f]
                             #:continue-on-visual-fail [continue-on-fail #f]
+                            #:skip-install [skip-install #f]
                             #:verbose [verbose #f])
-  ;; Validate APK file exists
-  (unless (file-exists? apk-file)
-    (eprintf "~a: APK file not found: ~a~n" (color-error "error") apk-file)
-    (exit EXIT-ERROR))
+  ;; Validate inputs based on mode
+  (when skip-install
+    (unless pkg-override
+      (eprintf "~a: --pkg is required when using --skip-install~n" (color-error "error"))
+      (exit EXIT-ERROR)))
+
+  (unless skip-install
+    (unless (file-exists? apk-file)
+      (eprintf "~a: APK file not found: ~a~n" (color-error "error") apk-file)
+      (exit EXIT-ERROR)))
 
   ;; Start service
   (start-playwright-service #:verbose verbose)
@@ -2004,36 +2013,44 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
   ;; Results accumulator
   (define results
-    (hash 'apk apk-file
+    (hash 'apk (if skip-install #f apk-file)
+          'package (if skip-install pkg-override #f)
           'device serial
           'timestamp (current-seconds)
+          'skipInstall skip-install
           'steps '()))
 
   (define overall-passed #t)
+  (define pkg-name pkg-override)  ;; Will be set by install or from --pkg
 
   (with-handlers ([exn:fail? (lambda (e)
                                (cleanup)
                                (eprintf "~a: ~a~n" (color-error "error") (exn-message e))
                                (exit EXIT-ERROR))])
 
-    ;; Step 1: Install APK
-    (eprintf "~n=== Step 1: Installing APK ===~n")
-    (define install-result (session-action (hash 'type "installApk" 'path (path->string (simple-form-path apk-file)))))
-    (define install-success (hash-ref install-result 'success #f))
-    (define pkg-name (or pkg-override (hash-ref install-result 'package #f)))
-
-    (if install-success
-        (eprintf "  ✓ Installed: ~a~n" pkg-name)
+    ;; Step 1: Install APK (or skip if --skip-install)
+    (if skip-install
         (begin
-          (eprintf "  ✗ Install failed: ~a~n" (hash-ref install-result 'error "unknown"))
-          (set! overall-passed #f)))
+          (eprintf "~n=== Step 1: Skipping Install (using running app) ===~n")
+          (eprintf "  → Package: ~a~n" pkg-name)
+          (set! results (hash-set results 'install (hash 'skipped #t 'package pkg-name))))
+        (let* ([install-result (session-action (hash 'type "installApk" 'path (path->string (simple-form-path apk-file))))]
+               [install-success (hash-ref install-result 'success #f)])
+          (eprintf "~n=== Step 1: Installing APK ===~n")
+          (set! pkg-name (or pkg-override (hash-ref install-result 'package #f)))
 
-    (set! results (hash-set results 'install install-result))
+          (if install-success
+              (eprintf "  ✓ Installed: ~a~n" pkg-name)
+              (begin
+                (eprintf "  ✗ Install failed: ~a~n" (hash-ref install-result 'error "unknown"))
+                (set! overall-passed #f)))
 
-    (unless install-success
-      (cleanup)
-      (eprintf "~n~a: APK installation failed~n" (color-error "error"))
-      (exit EXIT-ERROR))
+          (set! results (hash-set results 'install install-result))
+
+          (unless install-success
+            (cleanup)
+            (eprintf "~n~a: APK installation failed~n" (color-error "error"))
+            (exit EXIT-ERROR))))
 
     ;; Step 2: Launch app
     (eprintf "~n=== Step 2: Launching App ===~n")
@@ -3376,18 +3393,28 @@ Command-line interface for the web crawler for agents with service fallbacks.
                                #:verbose (verbose-mode)))]
 
           [(verify)
-           (when (empty? subcmd-args)
-             (eprintf "~a: APK file required for android verify~n~n" (color-error "error"))
-             (eprintf "Usage: ar-crawl android verify <app.apk> [options]~n")
-             (eprintf "~nOptions:~n")
-             (eprintf "  -b, --baseline <file>    Baseline screenshot for visual comparison~n")
-             (eprintf "  -s, --script <file>      Test script (JSON) to execute~n")
-             (eprintf "  -d, --device <serial>    Target device serial~n")
-             (eprintf "  -t, --threshold <pct>    Visual diff threshold (default: 0)~n")
-             (eprintf "  -o, --output <file>      Output results file (JSON)~n")
-             (exit EXIT-USAGE))
-           (define apk-file (car subcmd-args))
-           (parse-android-verify-args (cdr subcmd-args))
+           ;; Parse args first to check for --skip-install
+           (define positional-args (parse-android-verify-args subcmd-args))
+
+           ;; Determine APK file (optional with --skip-install)
+           (define apk-file
+             (cond
+               [(not (empty? positional-args)) (car positional-args)]
+               [(android-verify-skip-install) #f]  ;; No APK needed with --skip-install
+               [else
+                (eprintf "~a: APK file required for android verify~n~n" (color-error "error"))
+                (eprintf "Usage: ar-crawl android verify <app.apk> [options]~n")
+                (eprintf "       ar-crawl android verify --skip-install --pkg <package> [options]~n")
+                (eprintf "~nOptions:~n")
+                (eprintf "  -b, --baseline <file>    Baseline screenshot for visual comparison~n")
+                (eprintf "  -s, --script <file>      Test script (JSON) to execute~n")
+                (eprintf "  -d, --device <serial>    Target device serial~n")
+                (eprintf "  -p, --pkg <package>      Package name (required with --skip-install)~n")
+                (eprintf "  -t, --threshold <pct>    Visual diff threshold (default: 0)~n")
+                (eprintf "  -o, --output <file>      Output results file (JSON)~n")
+                (eprintf "      --skip-install       Skip APK install, test running app~n")
+                (exit EXIT-USAGE)]))
+
            (with-playwright-cleanup
              (cmd-android-verify apk-file
                                  #:device (android-verify-device)
@@ -3398,6 +3425,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
                                  #:wait (android-verify-wait)
                                  #:output (android-verify-output)
                                  #:continue-on-visual-fail (android-verify-continue)
+                                 #:skip-install (android-verify-skip-install)
                                  #:verbose (verbose-mode)))]
 
           [else
@@ -4303,11 +4331,12 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  -d, --device <serial>       Target device (default: first available)~n")
   (printf "  -b, --baseline <file>       Baseline screenshot for visual comparison~n")
   (printf "  -s, --script <file>         Test script (JSON) to execute~n")
-  (printf "  -p, --pkg <package>         Package name (overrides APK detection)~n")
+  (printf "  -p, --pkg <package>         Package name (required with --skip-install)~n")
   (printf "  -t, --threshold <pct>       Visual diff threshold percentage (default: 0)~n")
   (printf "  -w, --wait <ms>             Wait time after launch (default: 3000)~n")
   (printf "  -o, --output <file>         Output results file (JSON)~n")
-  (printf "      --continue              Continue even if visual diff fails~n~n")
+  (printf "      --continue              Continue even if visual diff fails~n")
+  (printf "      --skip-install          Skip APK install, test already-running app~n~n")
 
   (printf "SESSION COMMANDS (stdin)~n")
   (printf "  {\"type\": \"...\", ...}        Execute Android action (JSON)~n")
