@@ -2087,7 +2087,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
             ;; Capture and compare current screenshot
             (define compare-result
               (session-action (hash 'type "compareScreenshot"
-                                    'baseline baseline-b64
+                                    'baselineData baseline-b64
                                     'threshold threshold)))
 
             (set! visual-result compare-result)
