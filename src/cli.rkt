@@ -2034,10 +2034,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
           (eprintf "~n=== Step 1: Skipping Install (using running app) ===~n")
           (eprintf "  → Package: ~a~n" pkg-name)
           (set! results (hash-set results 'install (hash 'skipped #t 'package pkg-name))))
-        (let* ([install-result (session-action (hash 'type "installApk" 'path (path->string (simple-form-path apk-file))))]
+        (let* ([install-result (session-action (hash 'type "install" 'apk (path->string (simple-form-path apk-file))))]
                [install-success (hash-ref install-result 'success #f)])
           (eprintf "~n=== Step 1: Installing APK ===~n")
-          (set! pkg-name (or pkg-override (hash-ref install-result 'package #f)))
+          (set! pkg-name (or pkg-override (hash-ref install-result 'pkg #f)))
 
           (if install-success
               (eprintf "  ✓ Installed: ~a~n" pkg-name)
@@ -2054,7 +2054,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
     ;; Step 2: Launch app
     (eprintf "~n=== Step 2: Launching App ===~n")
-    (define launch-result (session-action (hash 'type "launch" 'pkg pkg-name)))
+    (define launch-result (session-action (hash 'type "launchApp" 'pkg pkg-name)))
     (define launch-success (hash-ref launch-result 'success #f))
 
     (if launch-success
