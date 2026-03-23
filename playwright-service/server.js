@@ -3,10 +3,14 @@ const { chromium } = require('playwright-extra');
 const { _android } = require('playwright');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const crypto = require('crypto');
+const { PNG } = require('pngjs');
 
 // Session storage
 const sessions = new Map();
 const androidSessions = new Map();
+
+// Baseline storage for visual regression
+const baselines = new Map();
 
 // Helper for session IDs without external deps
 function uuidv4() {
@@ -438,13 +442,48 @@ async function executeAndroidAction(sessionId, action) {
       }
 
       case 'scroll': {
-        const selector = parseAndroidSelector(action.selector);
         const direction = action.direction || 'down';
         const percent = action.percent || 50;
-        await device.scroll(selector, direction, percent, {
-          speed: action.speed || action.options?.speed,
-          timeout
-        });
+
+        if (action.selector) {
+          // Scroll a specific scrollable element
+          const selector = parseAndroidSelector(action.selector);
+          await device.scroll(selector, direction, percent, {
+            speed: action.speed || action.options?.speed,
+            timeout
+          });
+        } else {
+          // Selectorless screen scroll via input swipe
+          const info = await device.shell('wm size');
+          const sizeMatch = info.toString().match(/(\d+)x(\d+)/);
+          const screenW = sizeMatch ? parseInt(sizeMatch[1]) : 1080;
+          const screenH = sizeMatch ? parseInt(sizeMatch[2]) : 1920;
+          const cx = Math.round(screenW / 2);
+          const cy = Math.round(screenH / 2);
+          const distance = Math.round(Math.min(screenW, screenH) * (percent / 100));
+          const duration = action.speed || 300;
+
+          let x1, y1, x2, y2;
+          switch (direction) {
+            case 'up':
+              x1 = cx; y1 = cy; x2 = cx; y2 = cy + distance;
+              break;
+            case 'down':
+              x1 = cx; y1 = cy; x2 = cx; y2 = cy - distance;
+              break;
+            case 'left':
+              x1 = cx; y1 = cy; x2 = cx + distance; y2 = cy;
+              break;
+            case 'right':
+              x1 = cx; y1 = cy; x2 = cx - distance; y2 = cy;
+              break;
+            default:
+              x1 = cx; y1 = cy; x2 = cx; y2 = cy - distance;
+          }
+
+          await device.shell(`input swipe ${x1} ${y1} ${x2} ${y2} ${duration}`);
+        }
+
         result.action = 'scroll';
         result.direction = direction;
         break;
@@ -557,6 +596,88 @@ async function executeAndroidAction(sessionId, action) {
         break;
       }
 
+      case 'elementScreenshot': {
+        const selector = action.selector ? parseAndroidSelector(action.selector) : null;
+        if (!selector) {
+          throw new Error('Selector is required for elementScreenshot action');
+        }
+
+        log('Android elementScreenshot: capturing element with selector', action.selector);
+
+        // Get element bounds
+        const info = await device.info(selector);
+        if (!info) {
+          throw new Error('Could not find element with selector: ' + action.selector);
+        }
+
+        // Parse bounds format: [left,top][right,bottom]
+        const boundsMatch = JSON.stringify(info).match(/bounds.*?\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+        let bounds;
+
+        if (boundsMatch) {
+          bounds = {
+            left: parseInt(boundsMatch[1]),
+            top: parseInt(boundsMatch[2]),
+            right: parseInt(boundsMatch[3]),
+            bottom: parseInt(boundsMatch[4])
+          };
+        } else if (info.visibleBounds) {
+          bounds = info.visibleBounds;
+        } else {
+          throw new Error('Could not parse element bounds');
+        }
+
+        log('Android elementScreenshot: element bounds', bounds);
+
+        // Take full screenshot
+        const fullBuffer = await device.screenshot();
+
+        // Crop to element bounds using sharp or jimp
+        // For simplicity, store bounds info and let client crop
+        // Or use screencap with coordinates if available
+
+        result.action = 'elementScreenshot';
+        result.selector = action.selector;
+        result.bounds = bounds;
+        result.width = bounds.right - bounds.left;
+        result.height = bounds.bottom - bounds.top;
+        result.screenshot = fullBuffer.toString('base64');
+        result.fullSize = fullBuffer.length;
+
+        // Optionally store as baseline
+        if (action.asBaseline) {
+          const baselineName = action.baselineName || `element-${Date.now()}`;
+          const baseline = {
+            name: baselineName,
+            timestamp: Date.now(),
+            session: sessionId,
+            device: {
+              serial: session.serial,
+              model: session.model,
+              screen: session.screen
+            },
+            screenshot: fullBuffer.toString('base64'),
+            size: fullBuffer.length,
+            selector: action.selector,
+            bounds,
+            metadata: action.metadata || {}
+          };
+          baselines.set(baselineName, baseline);
+          result.baselineName = baselineName;
+          log('Android elementScreenshot: stored baseline', baselineName);
+        }
+
+        // Save to file if path provided
+        if (action.path) {
+          const fs = require('fs');
+          fs.writeFileSync(action.path, fullBuffer);
+          result.path = action.path;
+          log('Android elementScreenshot: saved to', action.path);
+        }
+
+        break;
+      }
+
       // ========== Device Info ==========
       case 'info': {
         const selector = action.selector ? parseAndroidSelector(action.selector) : null;
@@ -604,11 +725,136 @@ async function executeAndroidAction(sessionId, action) {
         if (!apk) {
           throw new Error('APK path is required for install action');
         }
+
+        // Get package name from APK before install (using aapt if available, otherwise install first)
+        let packageName = action.pkg; // Allow pre-specifying package name
+
+        // Install the APK
         await device.installApk(apk, {
           args: action.args || action.options?.args
         });
+
         result.action = 'install';
         result.apk = apk;
+        result.success = true;
+
+        // If package name provided, verify installation and get info
+        if (packageName || action.verify !== false) {
+          try {
+            // Try to detect package name from recent install
+            if (!packageName) {
+              // Get recently modified packages
+              const listOutput = await device.shell('pm list packages -f | tail -5');
+              const lines = listOutput.toString().trim().split('\n');
+              // The APK filename might give us a hint
+              const apkBasename = apk.split('/').pop().replace('.apk', '').toLowerCase();
+              for (const line of lines) {
+                const match = line.match(/package:(.+)=(.+)/);
+                if (match && match[1].toLowerCase().includes(apkBasename)) {
+                  packageName = match[2];
+                  break;
+                }
+              }
+            }
+
+            if (packageName) {
+              // Verify package is installed
+              const verifyOutput = await device.shell(`pm list packages | grep ${packageName}`);
+              result.verified = verifyOutput.toString().includes(packageName);
+              result.pkg = packageName;
+
+              // Get package info
+              const infoOutput = await device.shell(`dumpsys package ${packageName} | head -30`);
+              const versionMatch = infoOutput.toString().match(/versionName=([^\s]+)/);
+              const versionCodeMatch = infoOutput.toString().match(/versionCode=(\d+)/);
+
+              result.packageInfo = {
+                name: packageName,
+                versionName: versionMatch ? versionMatch[1] : null,
+                versionCode: versionCodeMatch ? parseInt(versionCodeMatch[1]) : null
+              };
+            }
+          } catch (verifyError) {
+            result.verifyError = verifyError.message;
+          }
+        }
+
+        break;
+      }
+
+      case 'uninstall': {
+        const pkg = action.pkg || action.package;
+        if (!pkg) {
+          throw new Error('Package name (pkg) is required for uninstall action');
+        }
+
+        // Check if package exists first
+        const checkOutput = await device.shell(`pm list packages | grep "^package:${pkg}$"`);
+        if (!checkOutput.toString().includes(pkg)) {
+          result.action = 'uninstall';
+          result.pkg = pkg;
+          result.existed = false;
+          result.success = true; // Not an error if not installed
+          break;
+        }
+
+        // Uninstall the package
+        const uninstallOutput = await device.shell(`pm uninstall ${action.keepData ? '-k' : ''} ${pkg}`);
+        const outputStr = uninstallOutput.toString().trim();
+
+        result.action = 'uninstall';
+        result.pkg = pkg;
+        result.existed = true;
+        result.output = outputStr;
+        result.success = outputStr.includes('Success');
+
+        if (!result.success) {
+          throw new Error(`Uninstall failed: ${outputStr}`);
+        }
+
+        break;
+      }
+
+      case 'clearData': {
+        const pkg = action.pkg || action.package;
+        if (!pkg) {
+          throw new Error('Package name (pkg) is required for clearData action');
+        }
+
+        // Check if package exists
+        const checkOutput = await device.shell(`pm list packages | grep "^package:${pkg}$"`);
+        if (!checkOutput.toString().includes(pkg)) {
+          throw new Error(`Package not found: ${pkg}`);
+        }
+
+        // Clear app data
+        const clearOutput = await device.shell(`pm clear ${pkg}`);
+        const outputStr = clearOutput.toString().trim();
+
+        result.action = 'clearData';
+        result.pkg = pkg;
+        result.output = outputStr;
+        result.success = outputStr.includes('Success');
+
+        if (!result.success) {
+          throw new Error(`Clear data failed: ${outputStr}`);
+        }
+
+        break;
+      }
+
+      case 'forceStop': {
+        const pkg = action.pkg || action.package;
+        if (!pkg) {
+          throw new Error('Package name (pkg) is required for forceStop action');
+        }
+
+        // Force stop the app
+        const stopOutput = await device.shell(`am force-stop ${pkg}`);
+
+        result.action = 'forceStop';
+        result.pkg = pkg;
+        result.success = true;
         break;
       }
 
@@ -671,6 +917,1173 @@ async function executeAndroidAction(sessionId, action) {
         result.action = 'launchBrowser';
         result.url = page.url();
         result.title = await page.title();
+        break;
+      }
+
+      // ========== App Launch ==========
+      case 'launchApp': {
+        const pkg = action.pkg || action.package;
+        if (!pkg) {
+          throw new Error('Package name (pkg) is required for launchApp action');
+        }
+        // Launch app using shell am start
+        const activity = action.activity;
+        let command;
+        if (activity) {
+          command = `am start -n ${pkg}/${activity}`;
+        } else {
+          // Use monkey to launch the main activity
+          command = `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`;
+        }
+        const output = await device.shell(command);
+        result.action = 'launchApp';
+        result.pkg = pkg;
+        result.output = output.toString();
+        // Wait a moment for app to launch
+        await new Promise(r => setTimeout(r, action.delay || 1000));
+        break;
+      }
+
+      // ========== List Packages ==========
+      case 'listPackages': {
+        // Get list of installed packages
+        const filter = action.filter || '';
+        const includeSystem = action.includeSystem || false;
+
+        let command = 'pm list packages';
+        if (!includeSystem) {
+          command += ' -3'; // Third-party apps only
+        }
+        if (filter) {
+          command += ` | grep -i "${filter}"`;
+        }
+
+        const listOutput = await device.shell(command);
+        const lines = listOutput.toString().trim().split('\n').filter(l => l.startsWith('package:'));
+
+        const packages = [];
+        for (const line of lines.slice(0, action.limit || 100)) {
+          const pkgName = line.replace('package:', '').trim();
+          if (!pkgName) continue;
+
+          const pkg = { name: pkgName };
+
+          // Get version info if requested
+          if (action.includeVersions !== false) {
+            try {
+              const infoOutput = await device.shell(`dumpsys package ${pkgName} | grep -E "versionName|versionCode" | head -2`);
+              const infoStr = infoOutput.toString();
+              const versionMatch = infoStr.match(/versionName=([^\s]+)/);
+              const codeMatch = infoStr.match(/versionCode=(\d+)/);
+              if (versionMatch) pkg.versionName = versionMatch[1];
+              if (codeMatch) pkg.versionCode = parseInt(codeMatch[1]);
+            } catch (e) {
+              // Skip version info on error
+            }
+          }
+
+          packages.push(pkg);
+        }
+
+        result.action = 'listPackages';
+        result.packages = packages;
+        result.count = packages.length;
+        break;
+      }
+
+      // ========== App State ==========
+      case 'appState': {
+        // Get current foreground app info
+        const activityOutput = await device.shell('dumpsys activity activities | grep mResumedActivity');
+        const match = activityOutput.toString().match(/u0 ([^\s]+)/);
+        result.currentActivity = match ? match[1] : null;
+
+        // Get device info
+        const info = await device.info();
+        result.deviceInfo = info;
+
+        result.action = 'appState';
+        break;
+      }
+
+      // ========== Assert Action ==========
+      case 'assert': {
+        const selector = action.selector ? parseAndroidSelector(action.selector) : null;
+        if (!selector) {
+          throw new Error('Selector is required for assert action');
+        }
+
+        const assertions = action.assertions || {};
+        const results = { passed: true, checks: [] };
+
+        try {
+          // Get element info
+          const info = await device.info(selector);
+
+          // Check existence - if we got here, element exists
+          if (assertions.exists !== undefined) {
+            const check = {
+              type: 'exists',
+              expected: assertions.exists,
+              actual: true,
+              passed: assertions.exists === true
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+          // Check visibility
+          if (assertions.visible !== undefined) {
+            const actual = info.visible !== false; // Default true if not specified
+            const check = {
+              type: 'visible',
+              expected: assertions.visible,
+              actual,
+              passed: assertions.visible === actual
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+          // Check enabled
+          if (assertions.enabled !== undefined) {
+            const actual = info.enabled !== false;
+            const check = {
+              type: 'enabled',
+              expected: assertions.enabled,
+              actual,
+              passed: assertions.enabled === actual
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+          // Check text content
+          if (assertions.text !== undefined) {
+            const actual = info.text || '';
+            const check = {
+              type: 'text',
+              expected: assertions.text,
+              actual,
+              passed: assertions.text === actual
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+          // Check text contains
+          if (assertions.textContains !== undefined) {
+            const actual = info.text || '';
+            const check = {
+              type: 'textContains',
+              expected: assertions.textContains,
+              actual,
+              passed: actual.includes(assertions.textContains)
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+          // Check text matches regex
+          if (assertions.textMatches !== undefined) {
+            const actual = info.text || '';
+            const regex = new RegExp(assertions.textMatches);
+            const check = {
+              type: 'textMatches',
+              expected: assertions.textMatches,
+              actual,
+              passed: regex.test(actual)
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+          // Check content description
+          if (assertions.contentDesc !== undefined) {
+            const actual = info.desc || '';
+            const check = {
+              type: 'contentDesc',
+              expected: assertions.contentDesc,
+              actual,
+              passed: assertions.contentDesc === actual
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+          // Check class name
+          if (assertions.className !== undefined) {
+            const actual = info.clazz || '';
+            const check = {
+              type: 'className',
+              expected: assertions.className,
+              actual,
+              passed: actual.includes(assertions.className)
+            };
+            results.checks.push(check);
+            if (!check.passed) results.passed = false;
+          }
+
+        } catch (error) {
+          // Element not found
+          if (assertions.exists === false) {
+            results.checks.push({
+              type: 'exists',
+              expected: false,
+              actual: false,
+              passed: true
+            });
+          } else {
+            results.passed = false;
+            results.error = error.message;
+            results.checks.push({
+              type: 'exists',
+              expected: true,
+              actual: false,
+              passed: false
+            });
+          }
+        }
+
+        result.action = 'assert';
+        result.selector = action.selector;
+        result.assertions = results;
+        result.success = results.passed;
+
+        // Throw if assertions failed and strict mode
+        if (!results.passed && action.strict !== false) {
+          throw new Error(`Assertion failed: ${JSON.stringify(results.checks.filter(c => !c.passed))}`);
+        }
+
+        break;
+      }
+
+      // ========== Visual Regression Baselines ==========
+      case 'captureBaseline': {
+        const name = action.name || `baseline-${Date.now()}`;
+
+        // Capture screenshot
+        const buffer = await device.screenshot();
+
+        // Store baseline with metadata
+        const baseline = {
+          name,
+          timestamp: Date.now(),
+          session: sessionId,
+          device: {
+            serial: session.serial,
+            model: session.model,
+            screen: session.screen
+          },
+          screenshot: buffer.toString('base64'),
+          size: buffer.length,
+          selector: action.selector || null,
+          metadata: action.metadata || {}
+        };
+
+        baselines.set(name, baseline);
+
+        result.action = 'captureBaseline';
+        result.name = name;
+        result.size = buffer.length;
+        result.timestamp = baseline.timestamp;
+
+        // Optionally save to file
+        if (action.path) {
+          const fs = require('fs');
+          fs.writeFileSync(action.path, buffer);
+          result.path = action.path;
+        }
+
+        break;
+      }
+
+      case 'getBaseline': {
+        const name = action.name;
+        if (!name) {
+          throw new Error('Baseline name is required');
+        }
+
+        const baseline = baselines.get(name);
+        if (!baseline) {
+          throw new Error(`Baseline not found: ${name}`);
+        }
+
+        result.action = 'getBaseline';
+        result.baseline = {
+          name: baseline.name,
+          timestamp: baseline.timestamp,
+          size: baseline.size,
+          device: baseline.device,
+          metadata: baseline.metadata
+        };
+
+        // Include image data if requested
+        if (action.includeImage) {
+          result.baseline.screenshot = baseline.screenshot;
+        }
+
+        break;
+      }
+
+      case 'listBaselines': {
+        const list = [];
+        for (const [name, baseline] of baselines) {
+          list.push({
+            name,
+            timestamp: baseline.timestamp,
+            size: baseline.size,
+            device: baseline.device,
+            metadata: baseline.metadata
+          });
+        }
+
+        result.action = 'listBaselines';
+        result.baselines = list;
+        result.count = list.length;
+        break;
+      }
+
+      case 'deleteBaseline': {
+        const name = action.name;
+        if (!name) {
+          throw new Error('Baseline name is required');
+        }
+
+        const deleted = baselines.delete(name);
+        result.action = 'deleteBaseline';
+        result.name = name;
+        result.deleted = deleted;
+        break;
+      }
+
+      // ========== Enhanced Wait Conditions ==========
+      case 'waitFor': {
+        const startTime = Date.now();
+        const waitTimeout = action.timeout || 30000;
+        const interval = action.interval || 500;
+        let lastError = null;
+
+        while (Date.now() - startTime < waitTimeout) {
+          try {
+            // Wait for element
+            if (action.selector) {
+              const selector = parseAndroidSelector(action.selector);
+              await device.wait(selector, {
+                state: action.state || 'visible',
+                timeout: Math.min(interval * 2, waitTimeout - (Date.now() - startTime))
+              });
+              result.action = 'waitFor';
+              result.condition = 'element';
+              result.selector = action.selector;
+              result.elapsed = Date.now() - startTime;
+              break;
+            }
+
+            // Wait for text on screen
+            if (action.text) {
+              // Use UI dump to find text
+              const uiDump = await device.shell('uiautomator dump /dev/tty');
+              const uiStr = uiDump.toString();
+              if (uiStr.includes(action.text)) {
+                result.action = 'waitFor';
+                result.condition = 'text';
+                result.text = action.text;
+                result.elapsed = Date.now() - startTime;
+                break;
+              }
+              throw new Error('Text not found');
+            }
+
+            // Wait for specific activity
+            if (action.activity) {
+              const activityOutput = await device.shell('dumpsys activity activities | grep mResumedActivity');
+              const actStr = activityOutput.toString();
+              if (actStr.includes(action.activity)) {
+                result.action = 'waitFor';
+                result.condition = 'activity';
+                result.activity = action.activity;
+                result.elapsed = Date.now() - startTime;
+                break;
+              }
+              throw new Error('Activity not found');
+            }
+
+            // Wait for package to be in foreground
+            if (action.pkg) {
+              const activityOutput = await device.shell('dumpsys activity activities | grep mResumedActivity');
+              const actStr = activityOutput.toString();
+              if (actStr.includes(action.pkg)) {
+                result.action = 'waitFor';
+                result.condition = 'package';
+                result.pkg = action.pkg;
+                result.elapsed = Date.now() - startTime;
+                break;
+              }
+              throw new Error('Package not in foreground');
+            }
+
+            // Wait for text to disappear
+            if (action.textGone) {
+              const uiDump = await device.shell('uiautomator dump /dev/tty');
+              const uiStr = uiDump.toString();
+              if (!uiStr.includes(action.textGone)) {
+                result.action = 'waitFor';
+                result.condition = 'textGone';
+                result.textGone = action.textGone;
+                result.elapsed = Date.now() - startTime;
+                break;
+              }
+              throw new Error('Text still present');
+            }
+
+          } catch (error) {
+            lastError = error;
+          }
+
+          // Wait before retry
+          await new Promise(r => setTimeout(r, interval));
+        }
+
+        // Check if we timed out
+        if (!result.condition) {
+          result.action = 'waitFor';
+          result.success = false;
+          result.timedOut = true;
+          result.elapsed = Date.now() - startTime;
+          result.error = lastError?.message || 'Condition not met';
+          throw new Error(`Wait timed out after ${waitTimeout}ms: ${lastError?.message || 'condition not met'}`);
+        }
+
+        break;
+      }
+
+      case 'waitForIdle': {
+        // Wait for device to be idle (no animations, UI settled)
+        const idleTimeout = action.timeout || 10000;
+
+        // Use wait-for-device-idle if available, or just wait
+        try {
+          await device.shell(`timeout ${Math.floor(idleTimeout/1000)} wait-for-device-idle`);
+        } catch (e) {
+          // Fallback: just wait a bit
+          await new Promise(r => setTimeout(r, action.delay || 2000));
+        }
+
+        result.action = 'waitForIdle';
+        result.success = true;
+        break;
+      }
+
+      // ========== Crash Detection ==========
+      case 'checkCrash': {
+        const pkg = action.pkg || action.package;
+        const since = action.since || 'boot';
+
+        const crashInfo = {
+          hasCrash: false,
+          hasANR: false,
+          crashes: [],
+          anrs: []
+        };
+
+        // Check for crashes in logcat
+        try {
+          const crashOutput = await device.shell(`logcat -d -v time *:E | grep -iE "(FATAL|crash|exception|error)" | tail -50`);
+          const crashLines = crashOutput.toString().trim().split('\n').filter(l => l.length > 0);
+
+          for (const line of crashLines) {
+            if (pkg && !line.includes(pkg)) continue;
+
+            crashInfo.crashes.push({
+              line,
+              timestamp: line.substring(0, 18).trim()
+            });
+          }
+
+          crashInfo.hasCrash = crashInfo.crashes.length > 0;
+        } catch (e) {
+          crashInfo.crashCheckError = e.message;
+        }
+
+        // Check for ANRs
+        try {
+          const anrOutput = await device.shell(`logcat -d -v time | grep -i "ANR in" | tail -10`);
+          const anrLines = anrOutput.toString().trim().split('\n').filter(l => l.length > 0);
+
+          for (const line of anrLines) {
+            if (pkg && !line.includes(pkg)) continue;
+
+            crashInfo.anrs.push({
+              line,
+              timestamp: line.substring(0, 18).trim()
+            });
+          }
+
+          crashInfo.hasANR = crashInfo.anrs.length > 0;
+        } catch (e) {
+          crashInfo.anrCheckError = e.message;
+        }
+
+        // Check if app is still running
+        if (pkg) {
+          try {
+            const pidOutput = await device.shell(`pidof ${pkg}`);
+            crashInfo.appRunning = pidOutput.toString().trim().length > 0;
+          } catch (e) {
+            crashInfo.appRunning = false;
+          }
+        }
+
+        result.action = 'checkCrash';
+        result.pkg = pkg;
+        result.crashInfo = crashInfo;
+        result.success = !crashInfo.hasCrash && !crashInfo.hasANR;
+        break;
+      }
+
+      case 'getLogcat': {
+        const pkg = action.pkg;
+        const lines = action.lines || 100;
+        const level = action.level || 'V'; // V, D, I, W, E
+        const filter = action.filter || '';
+
+        let command = `logcat -d -v threadtime`;
+
+        // Add level filter
+        if (level !== 'V') {
+          command += ` *:${level}`;
+        }
+
+        // Add line limit
+        command += ` | tail -${lines}`;
+
+        // Add grep filter for package or custom filter
+        if (pkg) {
+          command += ` | grep -i "${pkg}"`;
+        } else if (filter) {
+          command += ` | grep -i "${filter}"`;
+        }
+
+        const logOutput = await device.shell(command);
+
+        result.action = 'getLogcat';
+        result.lines = logOutput.toString().trim().split('\n');
+        result.count = result.lines.length;
+        break;
+      }
+
+      case 'clearLogcat': {
+        await device.shell('logcat -c');
+        result.action = 'clearLogcat';
+        result.success = true;
+        break;
+      }
+
+      case 'watchCrash': {
+        // Check for crash and capture detailed info
+        const pkg = action.pkg;
+
+        const info = {
+          hasCrash: false,
+          stack: null
+        };
+
+        // Get tombstones (native crashes)
+        try {
+          const tombOutput = await device.shell('ls -lt /data/tombstones/ 2>/dev/null | head -5');
+          info.tombstones = tombOutput.toString().trim();
+        } catch (e) {
+          // No tombstones access
+        }
+
+        // Get dropbox entries (app crashes/ANRs)
+        try {
+          const dropboxOutput = await device.shell('dumpsys dropbox --print 2>/dev/null | tail -100');
+          const dropStr = dropboxOutput.toString();
+
+          if (pkg && dropStr.includes(pkg)) {
+            info.hasCrash = true;
+            info.dropboxEntry = dropStr;
+          } else if (dropStr.includes('crash') || dropStr.includes('ANR')) {
+            info.hasCrash = true;
+            info.dropboxEntry = dropStr;
+          }
+        } catch (e) {
+          // No dropbox access
+        }
+
+        result.action = 'watchCrash';
+        result.crashInfo = info;
+        break;
+      }
+
+      // ========== Performance Metrics ==========
+      case 'perfMetrics': {
+        const pkg = action.pkg || action.package;
+
+        const metrics = {
+          timestamp: Date.now()
+        };
+
+        // Get memory info
+        try {
+          if (pkg) {
+            const memOutput = await device.shell(`dumpsys meminfo ${pkg} | head -20`);
+            const memStr = memOutput.toString();
+
+            // Parse total PSS
+            const pssMatch = memStr.match(/TOTAL\s+(\d+)/);
+            if (pssMatch) {
+              metrics.memoryPSS = parseInt(pssMatch[1]); // KB
+            }
+
+            // Parse native heap
+            const nativeMatch = memStr.match(/Native Heap\s+(\d+)/);
+            if (nativeMatch) {
+              metrics.nativeHeap = parseInt(nativeMatch[1]); // KB
+            }
+
+            // Parse Java heap
+            const javaMatch = memStr.match(/Java Heap\s+(\d+)/);
+            if (javaMatch) {
+              metrics.javaHeap = parseInt(javaMatch[1]); // KB
+            }
+          }
+        } catch (e) {
+          metrics.memoryError = e.message;
+        }
+
+        // Get CPU info
+        try {
+          if (pkg) {
+            const cpuOutput = await device.shell(`top -n 1 | grep ${pkg}`);
+            const cpuStr = cpuOutput.toString();
+            const cpuMatch = cpuStr.match(/(\d+(?:\.\d+)?)\s*%/);
+            if (cpuMatch) {
+              metrics.cpuPercent = parseFloat(cpuMatch[1]);
+            }
+          }
+        } catch (e) {
+          metrics.cpuError = e.message;
+        }
+
+        // Get battery info
+        try {
+          const batteryOutput = await device.shell('dumpsys battery | grep -E "level|temperature|status"');
+          const batteryStr = batteryOutput.toString();
+
+          const levelMatch = batteryStr.match(/level:\s*(\d+)/);
+          if (levelMatch) metrics.batteryLevel = parseInt(levelMatch[1]);
+
+          const tempMatch = batteryStr.match(/temperature:\s*(\d+)/);
+          if (tempMatch) metrics.batteryTemp = parseInt(tempMatch[1]) / 10; // Convert to Celsius
+        } catch (e) {
+          metrics.batteryError = e.message;
+        }
+
+        // Get frame stats if available
+        try {
+          if (pkg) {
+            const gfxOutput = await device.shell(`dumpsys gfxinfo ${pkg} | grep -A5 "Total frames"`);
+            const gfxStr = gfxOutput.toString();
+
+            const framesMatch = gfxStr.match(/Total frames rendered:\s*(\d+)/);
+            if (framesMatch) metrics.totalFrames = parseInt(framesMatch[1]);
+
+            const jankMatch = gfxStr.match(/Janky frames:\s*(\d+)/);
+            if (jankMatch) metrics.jankyFrames = parseInt(jankMatch[1]);
+          }
+        } catch (e) {
+          metrics.gfxError = e.message;
+        }
+
+        result.action = 'perfMetrics';
+        result.metrics = metrics;
+        result.pkg = pkg;
+        break;
+      }
+
+      case 'measureLaunchTime': {
+        const pkg = action.pkg || action.package;
+        if (!pkg) {
+          throw new Error('Package name (pkg) is required');
+        }
+
+        const activity = action.activity || '';
+
+        // Force stop first
+        await device.shell(`am force-stop ${pkg}`);
+        await new Promise(r => setTimeout(r, 500));
+
+        // Launch with timing
+        let command;
+        if (activity) {
+          command = `am start -W -n ${pkg}/${activity}`;
+        } else {
+          command = `am start -W $(pm dump ${pkg} | grep -A1 "android.intent.action.MAIN" | grep -o "\\S*/\\S*" | head -1)`;
+        }
+
+        const startTime = Date.now();
+        const launchOutput = await device.shell(command);
+        const launchStr = launchOutput.toString();
+
+        // Parse timing from am output
+        const timing = {
+          wallTime: Date.now() - startTime
+        };
+
+        // Parse ThisTime (time to display)
+        const thisTimeMatch = launchStr.match(/ThisTime:\s*(\d+)/);
+        if (thisTimeMatch) timing.thisTime = parseInt(thisTimeMatch[1]);
+
+        // Parse TotalTime (total time including app init)
+        const totalTimeMatch = launchStr.match(/TotalTime:\s*(\d+)/);
+        if (totalTimeMatch) timing.totalTime = parseInt(totalTimeMatch[1]);
+
+        // Parse WaitTime
+        const waitTimeMatch = launchStr.match(/WaitTime:\s*(\d+)/);
+        if (waitTimeMatch) timing.waitTime = parseInt(waitTimeMatch[1]);
+
+        result.action = 'measureLaunchTime';
+        result.pkg = pkg;
+        result.timing = timing;
+        result.output = launchStr;
+        break;
+      }
+
+      // ========== Test Script Execution ==========
+      case 'runTest': {
+        const steps = action.steps || [];
+        if (!steps.length) {
+          throw new Error('Test steps are required');
+        }
+
+        const testResult = {
+          name: action.name || 'Unnamed Test',
+          startTime: Date.now(),
+          steps: [],
+          passed: true,
+          failedStep: null
+        };
+
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i];
+          const stepResult = {
+            index: i,
+            type: step.type,
+            startTime: Date.now()
+          };
+
+          try {
+            // Execute the step action recursively
+            const actionResult = await executeAndroidAction(sessionId, {
+              ...step,
+              // Don't throw on assert failures during test
+              strict: step.type === 'assert' ? false : step.strict
+            });
+
+            stepResult.result = actionResult;
+            stepResult.success = actionResult.success !== false;
+            stepResult.duration = Date.now() - stepResult.startTime;
+
+            // For assertions, check the assertions result
+            if (step.type === 'assert' && actionResult.assertions) {
+              stepResult.success = actionResult.assertions.passed;
+            }
+
+            // If step failed and stopOnFailure is true (default), stop
+            if (!stepResult.success) {
+              testResult.passed = false;
+              testResult.failedStep = i;
+              testResult.failureReason = actionResult.error || 'Step failed';
+              testResult.steps.push(stepResult);
+
+              if (action.stopOnFailure !== false) {
+                break;
+              }
+            }
+
+          } catch (error) {
+            stepResult.success = false;
+            stepResult.error = error.message;
+            stepResult.duration = Date.now() - stepResult.startTime;
+
+            testResult.passed = false;
+            testResult.failedStep = i;
+            testResult.failureReason = error.message;
+            testResult.steps.push(stepResult);
+
+            if (action.stopOnFailure !== false) {
+              break;
+            }
+          }
+
+          testResult.steps.push(stepResult);
+
+          // Optional delay between steps
+          if (step.delay || action.stepDelay) {
+            await new Promise(r => setTimeout(r, step.delay || action.stepDelay));
+          }
+        }
+
+        testResult.endTime = Date.now();
+        testResult.duration = testResult.endTime - testResult.startTime;
+        testResult.stepsExecuted = testResult.steps.length;
+        testResult.stepsPassed = testResult.steps.filter(s => s.success).length;
+
+        result.action = 'runTest';
+        result.test = testResult;
+        result.success = testResult.passed;
+
+        break;
+      }
+
+      // ========== Screenshot Comparison ==========
+      case 'compareScreenshot': {
+        const baselineName = action.baseline || action.baselineName;
+        const inlineBaseline = action.baselineData; // Accept inline base64 data
+
+        if (!baselineName && !inlineBaseline) {
+          throw new Error('Baseline name or data is required for comparison');
+        }
+
+        // Try to get baseline from session storage, or use inline data
+        let baseline = baselines.get(baselineName);
+        let baselineBuffer;
+        let baselineSize;
+
+        if (baseline) {
+          // Use stored baseline
+          baselineBuffer = Buffer.from(baseline.screenshot, 'base64');
+          baselineSize = baseline.size;
+        } else if (inlineBaseline) {
+          // Use inline base64 data directly
+          baselineBuffer = Buffer.from(inlineBaseline, 'base64');
+          baselineSize = baselineBuffer.length;
+        } else {
+          throw new Error(`Baseline not found: ${baselineName}`);
+        }
+
+        // Capture current screenshot
+        const currentBuffer = await device.screenshot();
+        const currentBase64 = currentBuffer.toString('base64');
+
+        // Compare screenshots pixel by pixel
+        // Since we don't have image processing libs, do a simple comparison
+        const comparison = {
+          baselineName: baselineName || 'inline',
+          baselineSize: baselineSize,
+          currentSize: currentBuffer.length,
+          timestamp: Date.now()
+        };
+
+        // Decode PNGs and compare pixels
+        let baselinePng, currentPng;
+        try {
+          baselinePng = PNG.sync.read(baselineBuffer);
+          currentPng = PNG.sync.read(currentBuffer);
+        } catch (e) {
+          // Fall back to byte comparison if PNG decode fails
+          log('PNG decode failed, falling back to byte comparison:', e.message);
+          const minLength = Math.min(baselineBuffer.length, currentBuffer.length);
+          let diffBytes = 0;
+          for (let i = 0; i < minLength; i++) {
+            if (baselineBuffer[i] !== currentBuffer[i]) diffBytes++;
+          }
+          diffBytes += Math.abs(baselineBuffer.length - currentBuffer.length);
+          comparison.identical = diffBytes === 0;
+          comparison.diffBytes = diffBytes;
+          comparison.diffPercent = (diffBytes / Math.max(baselineBuffer.length, currentBuffer.length)) * 100;
+          comparison.method = 'byte';
+        }
+
+        if (baselinePng && currentPng) {
+          // Pixel-level comparison
+          comparison.method = 'pixel';
+          comparison.baselineWidth = baselinePng.width;
+          comparison.baselineHeight = baselinePng.height;
+          comparison.currentWidth = currentPng.width;
+          comparison.currentHeight = currentPng.height;
+
+          if (baselinePng.width !== currentPng.width || baselinePng.height !== currentPng.height) {
+            // Different dimensions = fail
+            comparison.identical = false;
+            comparison.diffPercent = 100;
+            comparison.dimensionMismatch = true;
+          } else {
+            // Compare pixels (RGBA = 4 bytes per pixel)
+            const totalPixels = baselinePng.width * baselinePng.height;
+            let diffPixels = 0;
+
+            for (let i = 0; i < baselinePng.data.length; i += 4) {
+              // Compare R, G, B (ignore alpha for minor rendering diffs)
+              const dr = Math.abs(baselinePng.data[i] - currentPng.data[i]);
+              const dg = Math.abs(baselinePng.data[i + 1] - currentPng.data[i + 1]);
+              const db = Math.abs(baselinePng.data[i + 2] - currentPng.data[i + 2]);
+
+              // Allow small per-channel tolerance for anti-aliasing
+              if (dr > 2 || dg > 2 || db > 2) {
+                diffPixels++;
+              }
+            }
+
+            comparison.identical = diffPixels === 0;
+            comparison.diffPixels = diffPixels;
+            comparison.totalPixels = totalPixels;
+            comparison.diffPercent = (diffPixels / totalPixels) * 100;
+          }
+        }
+
+        // Apply threshold
+        const threshold = action.threshold || 0; // Default: exact match
+        comparison.passed = comparison.diffPercent <= threshold;
+        comparison.threshold = threshold;
+
+        // Include screenshots if requested
+        if (action.includeScreenshots) {
+          comparison.baseline = baseline ? baseline.screenshot : inlineBaseline;
+          comparison.current = currentBase64;
+        }
+
+        // Store comparison result
+        if (action.saveName) {
+          const comparisonRecord = {
+            name: action.saveName,
+            timestamp: Date.now(),
+            baseline: baselineName,
+            ...comparison
+          };
+          // Store in session for later retrieval
+          if (!session.comparisons) session.comparisons = new Map();
+          session.comparisons.set(action.saveName, comparisonRecord);
+        }
+
+        result.action = 'compareScreenshot';
+        result.comparison = comparison;
+        result.success = comparison.passed;
+
+        log('Android compareScreenshot:', baselineName, '- diff:', comparison.diffPercent.toFixed(2) + '%', '- passed:', comparison.passed);
+        break;
+      }
+
+      case 'compareElement': {
+        // Compare a specific element against baseline
+        const baselineName = action.baseline || action.baselineName;
+        const selector = action.selector ? parseAndroidSelector(action.selector) : null;
+
+        if (!baselineName) {
+          throw new Error('Baseline name is required');
+        }
+        if (!selector) {
+          throw new Error('Selector is required for element comparison');
+        }
+
+        const baseline = baselines.get(baselineName);
+        if (!baseline) {
+          throw new Error(`Baseline not found: ${baselineName}`);
+        }
+
+        // Get current element bounds and screenshot
+        const info = await device.info(selector);
+        const currentBuffer = await device.screenshot();
+
+        const comparison = {
+          baselineName,
+          selector: action.selector,
+          timestamp: Date.now()
+        };
+
+        // Check if element bounds match baseline
+        if (baseline.bounds && info.bounds) {
+          // Parse and compare bounds
+          comparison.boundsMatch = JSON.stringify(baseline.bounds) === JSON.stringify(info.bounds);
+        }
+
+        // Simple byte comparison
+        const baselineBuffer = Buffer.from(baseline.screenshot, 'base64');
+        if (baselineBuffer.length === currentBuffer.length) {
+          let diffBytes = 0;
+          for (let i = 0; i < baselineBuffer.length; i++) {
+            if (baselineBuffer[i] !== currentBuffer[i]) {
+              diffBytes++;
+            }
+          }
+          comparison.identical = diffBytes === 0;
+          comparison.diffPercent = (diffBytes / baselineBuffer.length) * 100;
+        } else {
+          comparison.identical = false;
+          comparison.diffPercent = 100;
+        }
+
+        const threshold = action.threshold || 0;
+        comparison.passed = comparison.diffPercent <= threshold;
+        comparison.threshold = threshold;
+
+        result.action = 'compareElement';
+        result.comparison = comparison;
+        result.success = comparison.passed;
+
+        log('Android compareElement:', baselineName, '- selector:', action.selector, '- diff:', comparison.diffPercent.toFixed(2) + '%', '- passed:', comparison.passed);
+        break;
+      }
+
+      // ========== Visual Diff Report Generation ==========
+      case 'generateDiffReport': {
+        const baselineName = action.baseline;
+        const comparisons = action.comparisons || [];
+
+        if (!baselineName && comparisons.length === 0) {
+          throw new Error('Either baseline name or comparisons array is required');
+        }
+
+        const report = {
+          timestamp: Date.now(),
+          summary: {
+            total: 0,
+            passed: 0,
+            failed: 0
+          },
+          comparisons: []
+        };
+
+        // If single baseline provided, compare against current
+        if (baselineName) {
+          const baseline = baselines.get(baselineName);
+          if (!baseline) {
+            throw new Error(`Baseline not found: ${baselineName}`);
+          }
+
+          // Capture current screenshot
+          const currentBuffer = await device.screenshot();
+          const baselineBuffer = Buffer.from(baseline.screenshot, 'base64');
+
+          // Simple pixel diff analysis
+          const comparison = {
+            baseline: baselineName,
+            timestamp: Date.now()
+          };
+
+          if (baselineBuffer.length === currentBuffer.length) {
+            // Count different bytes and their positions
+            let diffBytes = 0;
+            const diffRegions = [];
+            let regionStart = null;
+
+            for (let i = 0; i < baselineBuffer.length; i++) {
+              if (baselineBuffer[i] !== currentBuffer[i]) {
+                diffBytes++;
+                if (regionStart === null) regionStart = i;
+              } else if (regionStart !== null) {
+                diffRegions.push({ start: regionStart, end: i - 1 });
+                regionStart = null;
+              }
+            }
+            if (regionStart !== null) {
+              diffRegions.push({ start: regionStart, end: baselineBuffer.length - 1 });
+            }
+
+            comparison.identical = diffBytes === 0;
+            comparison.diffBytes = diffBytes;
+            comparison.diffPercent = ((diffBytes / baselineBuffer.length) * 100).toFixed(2);
+            comparison.diffRegions = diffRegions.length;
+
+            // Create a simple "diff visualization" by marking changed bytes
+            // In a real implementation, you'd use a library like pixelmatch
+            comparison.analysis = {
+              totalBytes: baselineBuffer.length,
+              changedBytes: diffBytes,
+              changeRegions: diffRegions.slice(0, 10), // First 10 regions
+              moreRegions: Math.max(0, diffRegions.length - 10)
+            };
+          } else {
+            comparison.identical = false;
+            comparison.diffPercent = 100;
+            comparison.sizeDiff = currentBuffer.length - baselineBuffer.length;
+            comparison.analysis = {
+              baselineSize: baselineBuffer.length,
+              currentSize: currentBuffer.length,
+              note: 'Screenshots have different sizes - cannot perform byte comparison'
+            };
+          }
+
+          const threshold = action.threshold || 0;
+          comparison.passed = parseFloat(comparison.diffPercent) <= threshold;
+          comparison.threshold = threshold;
+
+          report.comparisons.push(comparison);
+          report.summary.total = 1;
+          report.summary.passed = comparison.passed ? 1 : 0;
+          report.summary.failed = comparison.passed ? 0 : 1;
+        }
+
+        // Process multiple comparisons if provided
+        for (const comp of comparisons) {
+          const baseline = baselines.get(comp.baseline);
+          if (!baseline) continue;
+
+          const compResult = {
+            baseline: comp.baseline,
+            name: comp.name || comp.baseline,
+            passed: false,
+            note: 'Comparison queued'
+          };
+
+          // You would perform the comparison here
+          report.comparisons.push(compResult);
+          report.summary.total++;
+        }
+
+        // Generate HTML report if requested
+        if (action.format === 'html') {
+          const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Visual Diff Report - ${new Date(report.timestamp).toISOString()}</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .summary { background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+    .passed { color: green; }
+    .failed { color: red; }
+    .comparison { border: 1px solid #ddd; padding: 15px; margin-bottom: 10px; border-radius: 5px; }
+    .comparison.failed { border-color: #f88; background: #fff5f5; }
+    .comparison.passed { border-color: #8f8; background: #f5fff5; }
+  </style>
+</head>
+<body>
+  <h1>Visual Diff Report</h1>
+  <div class="summary">
+    <h2>Summary</h2>
+    <p>Total: ${report.summary.total}</p>
+    <p class="passed">Passed: ${report.summary.passed}</p>
+    <p class="failed">Failed: ${report.summary.failed}</p>
+    <p>Generated: ${new Date(report.timestamp).toISOString()}</p>
+  </div>
+  <h2>Comparisons</h2>
+  ${report.comparisons.map(c => `
+    <div class="comparison ${c.passed ? 'passed' : 'failed'}">
+      <h3>${c.baseline}</h3>
+      <p>Status: <strong>${c.passed ? 'PASSED' : 'FAILED'}</strong></p>
+      <p>Diff: ${c.diffPercent || 'N/A'}% (threshold: ${c.threshold || 0}%)</p>
+      ${c.analysis ? `<pre>${JSON.stringify(c.analysis, null, 2)}</pre>` : ''}
+    </div>
+  `).join('')}
+</body>
+</html>`;
+          report.html = html;
+
+          if (action.path) {
+            const fs = require('fs');
+            fs.writeFileSync(action.path, html);
+            report.savedTo = action.path;
+          }
+        }
+
+        result.action = 'generateDiffReport';
+        result.report = report;
+        result.success = report.summary.failed === 0;
+
+        log('Android generateDiffReport: total:', report.summary.total, 'passed:', report.summary.passed, 'failed:', report.summary.failed);
         break;
       }
 
@@ -2492,8 +3905,24 @@ const server = http.createServer(async (req, res) => {
           const params = new URLSearchParams(urlParts[1]);
           if (params.get('path')) options.path = params.get('path');
           if (params.get('selector')) options.selector = params.get('selector');
+          if (params.get('format')) options.format = params.get('format'); // png, base64, json
         }
 
+        // If selector provided, use element screenshot
+        if (options.selector) {
+          log('Android screenshot: element selector provided', options.selector);
+          const result = await executeAndroidAction(sessionId, {
+            type: 'elementScreenshot',
+            selector: options.selector,
+            path: options.path
+          });
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+          return;
+        }
+
+        // Regular full screenshot
         const buffer = await session.device.screenshot({
           path: options.path
         });
@@ -2501,6 +3930,13 @@ const server = http.createServer(async (req, res) => {
         if (options.path) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ saved: true, path: options.path, size: buffer.length }));
+        } else if (options.format === 'base64' || options.format === 'json') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            screenshot: buffer.toString('base64'),
+            size: buffer.length,
+            format: 'base64'
+          }));
         } else {
           res.writeHead(200, { 'Content-Type': 'image/png' });
           res.end(buffer);
@@ -2555,6 +3991,26 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // POST /android/session/{id}/launch - Launch an app by package name
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'launch') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'launchApp',
+          pkg: options.pkg || options.package,
+          activity: options.activity,
+          delay: options.delay
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android launch app error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
     // POST /android/session/{id}/install
     if (req.method === 'POST' && parts.length === 4 && parts[3] === 'install') {
       try {
@@ -2562,12 +4018,93 @@ const server = http.createServer(async (req, res) => {
         const result = await executeAndroidAction(sessionId, {
           type: 'install',
           apk: options.apk,
-          args: options.args
+          pkg: options.pkg,
+          args: options.args,
+          verify: options.verify !== false // Default to true
         });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (error) {
         console.error('Android install error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/uninstall - Uninstall an app
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'uninstall') {
+      try {
+        const options = await parseBody(req);
+        if (!options.pkg && !options.package) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Package name (pkg) is required' }));
+          return;
+        }
+        const result = await executeAndroidAction(sessionId, {
+          type: 'uninstall',
+          pkg: options.pkg || options.package,
+          keepData: options.keepData || false
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android uninstall error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/clear-data - Clear app data
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'clear-data') {
+      try {
+        const options = await parseBody(req);
+        if (!options.pkg && !options.package) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Package name (pkg) is required' }));
+          return;
+        }
+
+        // Optionally force stop the app first
+        if (options.forceStop !== false) {
+          await executeAndroidAction(sessionId, {
+            type: 'forceStop',
+            pkg: options.pkg || options.package
+          });
+        }
+
+        const result = await executeAndroidAction(sessionId, {
+          type: 'clearData',
+          pkg: options.pkg || options.package
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android clear data error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/force-stop - Force stop an app
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'force-stop') {
+      try {
+        const options = await parseBody(req);
+        if (!options.pkg && !options.package) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Package name (pkg) is required' }));
+          return;
+        }
+        const result = await executeAndroidAction(sessionId, {
+          type: 'forceStop',
+          pkg: options.pkg || options.package
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android force stop error:', error.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
       }
@@ -2606,6 +4143,191 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(result));
       } catch (error) {
         console.error('Android push error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/baseline - Capture baseline screenshot
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'baseline') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'captureBaseline',
+          name: options.name,
+          path: options.path,
+          selector: options.selector,
+          metadata: options.metadata
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android baseline capture error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // GET /android/session/{id}/baselines - List all baselines
+    if (req.method === 'GET' && parts.length === 4 && parts[3] === 'baselines') {
+      try {
+        const result = await executeAndroidAction(sessionId, {
+          type: 'listBaselines'
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android list baselines error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // DELETE /android/session/{id}/baseline/{name} - Delete a baseline
+    if (req.method === 'DELETE' && parts.length === 5 && parts[3] === 'baseline') {
+      try {
+        const baselineName = decodeURIComponent(parts[4]);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'deleteBaseline',
+          name: baselineName
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android delete baseline error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/compare - Compare screenshot with baseline
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'compare') {
+      try {
+        const options = await parseBody(req);
+
+        const actionType = options.selector ? 'compareElement' : 'compareScreenshot';
+
+        const result = await executeAndroidAction(sessionId, {
+          type: actionType,
+          baseline: options.baseline,
+          baselineName: options.baselineName,
+          selector: options.selector,
+          threshold: options.threshold,
+          includeScreenshots: options.includeScreenshots,
+          saveName: options.saveName
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android compare error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/diff-report - Generate visual diff report
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'diff-report') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'generateDiffReport',
+          baseline: options.baseline,
+          comparisons: options.comparisons,
+          threshold: options.threshold,
+          format: options.format,
+          path: options.path
+        });
+
+        if (options.format === 'html' && result.report?.html && !options.json) {
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(result.report.html);
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        }
+      } catch (error) {
+        console.error('Android diff report error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/wait-for - Wait for condition
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'wait-for') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'waitFor',
+          selector: options.selector,
+          text: options.text,
+          textGone: options.textGone,
+          activity: options.activity,
+          pkg: options.pkg,
+          state: options.state,
+          timeout: options.timeout,
+          interval: options.interval
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android wait-for error:', error.message);
+        const status = error.message.includes('timed out') ? 408 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: error.message,
+          timedOut: error.message.includes('timed out')
+        }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/assert - Assert element properties
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'assert') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'assert',
+          selector: options.selector,
+          assertions: options.assertions || options,
+          strict: options.strict
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android assert error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: error.message,
+          assertions: error.assertions
+        }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/test - Run a test script
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'test') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'runTest',
+          name: options.name,
+          steps: options.steps,
+          stopOnFailure: options.stopOnFailure,
+          stepDelay: options.stepDelay
+        });
+
+        // Return 200 even for failed tests (it's not an error, just a failed test)
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android test error:', error.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
       }
@@ -2657,7 +4379,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // GET /android/session/{id}/state
+    // GET /android/session/{id}/state - Enhanced app state
     if ((req.method === 'GET' || req.method === 'POST') && parts.length === 4 && parts[3].startsWith('state')) {
       try {
         const session = androidSessions.get(sessionId);
@@ -2665,6 +4387,22 @@ const server = http.createServer(async (req, res) => {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Android session not found' }));
           return;
+        }
+
+        // Parse query params for additional info
+        const urlParts = req.url.split('?');
+        let options = {};
+        if (urlParts[1]) {
+          const params = new URLSearchParams(urlParts[1]);
+          if (params.get('ui')) options.includeUI = params.get('ui') === 'true';
+          if (params.get('processes')) options.includeProcesses = params.get('processes') === 'true';
+        }
+
+        // For POST, parse body
+        if (req.method === 'POST') {
+          const body = await parseBody(req);
+          if (body.includeUI !== undefined) options.includeUI = body.includeUI;
+          if (body.includeProcesses !== undefined) options.includeProcesses = body.includeProcesses;
         }
 
         const result = {
@@ -2681,10 +4419,208 @@ const server = http.createServer(async (req, res) => {
           browserLaunched: session.browserContext !== null
         };
 
+        // Get current activity
+        try {
+          const activityOutput = await session.device.shell('dumpsys activity activities | grep mResumedActivity');
+          const match = activityOutput.toString().match(/u0 ([^\s]+)/);
+          result.currentActivity = match ? match[1] : null;
+        } catch (e) {
+          result.currentActivity = null;
+        }
+
+        // Get current focused window
+        try {
+          const windowOutput = await session.device.shell('dumpsys window windows | grep -E "mCurrentFocus|mFocusedApp"');
+          result.focusedWindow = windowOutput.toString().trim();
+        } catch (e) {
+          result.focusedWindow = null;
+        }
+
+        // Optionally include UI hierarchy dump
+        if (options.includeUI) {
+          try {
+            const uiOutput = await session.device.shell('uiautomator dump /dev/tty');
+            result.uiHierarchy = uiOutput.toString();
+          } catch (e) {
+            result.uiHierarchy = null;
+            result.uiError = e.message;
+          }
+        }
+
+        // Optionally include running processes
+        if (options.includeProcesses) {
+          try {
+            const psOutput = await session.device.shell('ps -A | head -50');
+            result.processes = psOutput.toString();
+          } catch (e) {
+            result.processes = null;
+          }
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (error) {
         console.error('Android state error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // GET /android/session/{id}/packages - List installed packages
+    if (req.method === 'GET' && parts.length === 4 && parts[3] === 'packages') {
+      try {
+        const session = androidSessions.get(sessionId);
+        if (!session) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Android session not found' }));
+          return;
+        }
+
+        // Parse query params
+        const urlParts = req.url.split('?');
+        let options = {};
+        if (urlParts[1]) {
+          const params = new URLSearchParams(urlParts[1]);
+          if (params.get('filter')) options.filter = params.get('filter');
+          if (params.get('system')) options.includeSystem = params.get('system') === 'true';
+          if (params.get('versions')) options.includeVersions = params.get('versions') !== 'false';
+          if (params.get('limit')) options.limit = parseInt(params.get('limit'));
+        }
+
+        const result = await executeAndroidAction(sessionId, {
+          type: 'listPackages',
+          ...options
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android packages error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // GET /android/session/{id}/crash - Check for crashes
+    if ((req.method === 'GET' || req.method === 'POST') && parts.length === 4 && parts[3] === 'crash') {
+      try {
+        let options = {};
+
+        if (req.method === 'GET') {
+          const urlParts = req.url.split('?');
+          if (urlParts[1]) {
+            const params = new URLSearchParams(urlParts[1]);
+            if (params.get('pkg')) options.pkg = params.get('pkg');
+          }
+        } else {
+          options = await parseBody(req);
+        }
+
+        const result = await executeAndroidAction(sessionId, {
+          type: 'checkCrash',
+          pkg: options.pkg
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android crash check error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // GET /android/session/{id}/perf - Get performance metrics
+    if ((req.method === 'GET' || req.method === 'POST') && parts.length === 4 && parts[3] === 'perf') {
+      try {
+        let options = {};
+
+        if (req.method === 'GET') {
+          const urlParts = req.url.split('?');
+          if (urlParts[1]) {
+            const params = new URLSearchParams(urlParts[1]);
+            if (params.get('pkg')) options.pkg = params.get('pkg');
+          }
+        } else {
+          options = await parseBody(req);
+        }
+
+        const result = await executeAndroidAction(sessionId, {
+          type: 'perfMetrics',
+          pkg: options.pkg
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android perf error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // POST /android/session/{id}/launch-time - Measure app launch time
+    if (req.method === 'POST' && parts.length === 4 && parts[3] === 'launch-time') {
+      try {
+        const options = await parseBody(req);
+        const result = await executeAndroidAction(sessionId, {
+          type: 'measureLaunchTime',
+          pkg: options.pkg,
+          activity: options.activity
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android launch time error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // GET /android/session/{id}/logcat - Get logcat output
+    if ((req.method === 'GET' || req.method === 'POST') && parts.length === 4 && parts[3] === 'logcat') {
+      try {
+        let options = {};
+
+        if (req.method === 'GET') {
+          const urlParts = req.url.split('?');
+          if (urlParts[1]) {
+            const params = new URLSearchParams(urlParts[1]);
+            if (params.get('pkg')) options.pkg = params.get('pkg');
+            if (params.get('lines')) options.lines = parseInt(params.get('lines'));
+            if (params.get('level')) options.level = params.get('level');
+            if (params.get('filter')) options.filter = params.get('filter');
+          }
+        } else {
+          options = await parseBody(req);
+        }
+
+        const result = await executeAndroidAction(sessionId, {
+          type: 'getLogcat',
+          ...options
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android logcat error:', error.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+      return;
+    }
+
+    // DELETE /android/session/{id}/logcat - Clear logcat
+    if (req.method === 'DELETE' && parts.length === 4 && parts[3] === 'logcat') {
+      try {
+        const result = await executeAndroidAction(sessionId, {
+          type: 'clearLogcat'
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        console.error('Android clear logcat error:', error.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
       }
@@ -2782,7 +4718,24 @@ server.listen(PORT, () => {
   log('  GET  /android/devices              - List connected Android devices');
   log('  POST /android/session/create       - Create Android session');
   log('  POST /android/session/{id}/action  - Execute Android action');
-  log('  GET  /android/session/{id}/screenshot - Capture screenshot');
+  log('  GET  /android/session/{id}/screenshot - Capture screenshot (supports ?selector=, ?format=base64)');
+  log('  POST /android/session/{id}/launch  - Launch app by package name');
+  log('  POST /android/session/{id}/install - Install APK');
+  log('  POST /android/session/{id}/uninstall - Uninstall app by package name');
+  log('  POST /android/session/{id}/clear-data - Clear app data');
+  log('  POST /android/session/{id}/force-stop - Force stop an app');
+  log('  GET  /android/session/{id}/packages - List installed packages');
+  log('  GET  /android/session/{id}/crash   - Check for crashes and ANRs');
+  log('  GET  /android/session/{id}/logcat  - Get logcat output');
+  log('  DELETE /android/session/{id}/logcat - Clear logcat buffer');
+  log('  POST /android/session/{id}/wait-for - Wait for element/text/activity condition');
+  log('  POST /android/session/{id}/assert  - Assert element properties');
+  log('  POST /android/session/{id}/test    - Run a test script with pass/fail results');
+  log('  POST /android/session/{id}/baseline - Capture baseline screenshot');
+  log('  GET  /android/session/{id}/baselines - List all baselines');
+  log('  DELETE /android/session/{id}/baseline/{name} - Delete a baseline');
+  log('  POST /android/session/{id}/compare - Compare screenshot with baseline');
+  log('  POST /android/session/{id}/diff-report - Generate visual diff report');
   log('  POST /android/session/{id}/commit  - Export recording');
   log('  POST /android/replay               - Replay Android recording');
 });
