@@ -1328,6 +1328,30 @@ Command-line interface for the web crawler for agents with service fallbacks.
            (flush-output)
            (loop))]
 
+        ;; Scroll shorthand: scroll [direction] [selector] [percent]
+        [(or (string=? cmd-str "scroll") (string-prefix? cmd-str "scroll "))
+         (with-handlers ([exn:fail? (lambda (e)
+                                      (displayln (jsexpr->string (hash 'error (exn-message e))))
+                                      (loop))])
+           (define parts (string-split cmd-str))
+           (define direction (if (> (length parts) 1) (list-ref parts 1) "down"))
+           (define selector (if (> (length parts) 2) (list-ref parts 2) #f))
+           (define percent (if (> (length parts) 3)
+                               (string->number (list-ref parts 3))
+                               50))
+           (define action
+             (if selector
+                 (hash 'type "scroll" 'selector selector 'direction direction 'percent percent)
+                 (hash 'type "scroll" 'direction direction 'percent percent)))
+           (define resp (post-pure-port
+                         (string->url (format "~a/android/session/~a/action" base-url session-id))
+                         (string->bytes/utf-8 (jsexpr->string action))
+                         (list "Content-Type: application/json")))
+           (displayln (port->string resp))
+           (close-input-port resp)
+           (flush-output)
+           (loop))]
+
         ;; Shell command
         [(string-prefix? cmd-str "shell ")
          (with-handlers ([exn:fail? (lambda (e)
@@ -1391,6 +1415,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
                            (hash 'actions "Send JSON objects for Android actions"
                                  'state "Get current session state"
                                  'screenshot "Take screenshot: screenshot [file.png]"
+                                 'scroll "Scroll screen: scroll [direction] [selector] [percent]"
                                  'webviews "List active WebViews"
                                  'shell "Run shell command: shell <command>"
                                  'commit "End session and return recording JSON"
@@ -4342,6 +4367,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  {\"type\": \"...\", ...}        Execute Android action (JSON)~n")
   (printf "  state                       Get current session state~n")
   (printf "  screenshot [file.png]       Take screenshot~n")
+  (printf "  scroll [dir] [sel] [pct]   Scroll screen or element~n")
   (printf "  webviews                    List active WebViews~n")
   (printf "  shell <command>             Run ADB shell command~n")
   (printf "  commit [file.json]          End session, output/save recording~n")
@@ -4357,6 +4383,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  Gestures:~n")
   (printf "    {\"type\": \"swipe\", \"selector\": \"res=list\", \"direction\": \"up\", \"percent\": 50}~n")
   (printf "    {\"type\": \"scroll\", \"selector\": \"res=view\", \"direction\": \"down\"}~n")
+  (printf "    {\"type\": \"scroll\", \"direction\": \"down\"}  (no selector = full screen scroll)~n")
   (printf "    {\"type\": \"fling\", \"selector\": \"res=list\", \"direction\": \"down\"}~n")
   (printf "    {\"type\": \"pinchOpen\", \"selector\": \"res=image\", \"percent\": 50}~n")
   (printf "    {\"type\": \"pinchClose\", \"selector\": \"res=image\", \"percent\": 50}~n")

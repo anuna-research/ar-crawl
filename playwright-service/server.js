@@ -442,13 +442,48 @@ async function executeAndroidAction(sessionId, action) {
       }
 
       case 'scroll': {
-        const selector = parseAndroidSelector(action.selector);
         const direction = action.direction || 'down';
         const percent = action.percent || 50;
-        await device.scroll(selector, direction, percent, {
-          speed: action.speed || action.options?.speed,
-          timeout
-        });
+
+        if (action.selector) {
+          // Scroll a specific scrollable element
+          const selector = parseAndroidSelector(action.selector);
+          await device.scroll(selector, direction, percent, {
+            speed: action.speed || action.options?.speed,
+            timeout
+          });
+        } else {
+          // Selectorless screen scroll via input swipe
+          const info = await device.shell('wm size');
+          const sizeMatch = info.toString().match(/(\d+)x(\d+)/);
+          const screenW = sizeMatch ? parseInt(sizeMatch[1]) : 1080;
+          const screenH = sizeMatch ? parseInt(sizeMatch[2]) : 1920;
+          const cx = Math.round(screenW / 2);
+          const cy = Math.round(screenH / 2);
+          const distance = Math.round(Math.min(screenW, screenH) * (percent / 100));
+          const duration = action.speed || 300;
+
+          let x1, y1, x2, y2;
+          switch (direction) {
+            case 'up':
+              x1 = cx; y1 = cy; x2 = cx; y2 = cy + distance;
+              break;
+            case 'down':
+              x1 = cx; y1 = cy; x2 = cx; y2 = cy - distance;
+              break;
+            case 'left':
+              x1 = cx; y1 = cy; x2 = cx + distance; y2 = cy;
+              break;
+            case 'right':
+              x1 = cx; y1 = cy; x2 = cx - distance; y2 = cy;
+              break;
+            default:
+              x1 = cx; y1 = cy; x2 = cx; y2 = cy - distance;
+          }
+
+          await device.shell(`input swipe ${x1} ${y1} ${x2} ${y2} ${duration}`);
+        }
+
         result.action = 'scroll';
         result.direction = direction;
         break;
