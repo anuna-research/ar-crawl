@@ -104,6 +104,13 @@ Agent workflow:
 
 ### Installation
 
+**Quick install (prebuilt binary):**
+```bash
+curl -fsSL https://files.anuna.io/ar-crawl/latest/install.sh | bash
+```
+
+**From source:**
+
 1. **Clone the repository:**
    ```bash
    git clone <repository-url>
