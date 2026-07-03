@@ -7,4 +7,4 @@
 (provide AR-CRAWL-VERSION)
 
 ;; Version from git tag (updated at build time)
-(define AR-CRAWL-VERSION "v1.0.27-3-g446eced")
+(define AR-CRAWL-VERSION "v1.0.30")
