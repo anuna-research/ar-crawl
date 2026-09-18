@@ -78,7 +78,7 @@ make dev-run      # run from source
 
 The Playwright service lives in `playwright-service/` (`npm install` runs on first use; `PLAYWRIGHT_SERVICE_DIR` points the CLI at a checkout). Set service API keys in `.env`; see the [configuration reference](docs/reference/configuration.md). Racket tooling for agents is in [AGENT.md](AGENT.md).
 
-To add a crawling service: implement an adapter in `src/crawl-service-adaptor.rkt`, register it in the service registry, add its configuration schema, and add tests and a reference entry.
+To add a crawling service, implement an adapter in `src/crawl-service-adaptor.rkt` and register it in the service registry. Then add its configuration schema, tests, and a reference entry.
 
 Contributions arrive as pull requests on [git.anuna.io/anuna-research/ar-crawl](https://git.anuna.io/anuna-research/ar-crawl): branch, change, test, submit.
 
