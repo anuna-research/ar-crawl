@@ -6,16 +6,20 @@ Built in Racket. It crawls with a built-in direct HTTP service or a local Playwr
 
 ## Quick Start
 
-Needs Racket 8.0+, and Node.js 18+ for browser rendering.
+```bash
+curl -fsSL https://files.anuna.io/ar-crawl/latest/install.sh | bash
+ar-crawl crawl https://example.com -o first.json
+```
+
+The installer puts the `ar-crawl` binary in `~/.local/bin` (override with `INSTALL_DIR`) and the Playwright service beside it; Node.js 18+ is needed for browser rendering. `first.json` holds the page, and no API key is involved. For the guided version, read [Your first crawl](docs/tutorial/index.md).
+
+To run from source instead, with Racket 8.0+:
 
 ```bash
 git clone ssh://git@git.anuna.io/anuna-research/ar-crawl.git
-cd ar-crawl
-make setup && make install            # .env is created; leave it empty for now
+cd ar-crawl && make setup && make install
 racket src/cli.rkt crawl https://example.com -o first.json
 ```
-
-`first.json` holds the page. No API key is involved. For the guided version, read [Your first crawl](docs/tutorial/index.md).
 
 ## Usage
 

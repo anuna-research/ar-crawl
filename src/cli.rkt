@@ -4611,6 +4611,30 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  - WebView automation requires Chrome 87+ on device~n")
   (printf "  - For browser testing, use 'launchBrowser' action~n~n"))
 
+;; @function{show-stats-help}
+;; @description{Show help for the stats command}
+(define (show-stats-help)
+  (printf "~nSTATS - Show statistics about a crawl database~n")
+  (printf "==============================================~n~n")
+  (printf "Summarise a SQLite database written with --format sqlite: page counts,~n")
+  (printf "failures, discovered links, content sizes and crawl sessions.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl stats <file.db> [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -v, --verbose       Show additional detail~n")
+  (printf "  -f, --format FMT    Output format: json (default: human-readable text)~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Summarise a crawl database~n")
+  (printf "  ar-crawl stats site-data.db~n~n")
+  (printf "  # Machine-readable, for an agent~n")
+  (printf "  ar-crawl stats site-data.db --format json~n~n")
+
+  (printf "SEE ALSO~n")
+  (printf "  ar-crawl crawl-site <url> --output site-data.db --format sqlite~n~n"))
+
 ;; @function{show-command-help}
 ;; @description{Show help for a specific command}
 (define (show-command-help command)
@@ -4623,6 +4647,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(android) (show-android-help)]
     [(extract) (show-extract-help)]
     [(sample) (show-sample-help)]
+    [(stats) (show-stats-help)]
     [(health) (show-health-help)]
     [(test) (show-test-help)]
     [(config) (show-config-help)]
@@ -4630,7 +4655,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(monitor) (show-monitor-help)]
     [else
      (printf "Unknown command: ~a~n~n" command)
-     (printf "Available commands: crawl, crawl-site, probe, replay, session, android, extract, sample, health, test, config, services, monitor~n")
+     (printf "Available commands: crawl, crawl-site, probe, replay, session, android, extract, sample, stats, health, test, config, services, monitor~n")
      (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters

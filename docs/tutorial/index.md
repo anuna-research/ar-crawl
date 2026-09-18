@@ -9,28 +9,25 @@ We are going to install ar-crawl, crawl one page, crawl a small site, and then q
 
 ## Before you start
 
-You need [Racket](https://racket-lang.org/) 8.0 or higher and `git`. Node.js 18+ is needed later for browser rendering; skip it for now.
+You need `curl` and a shell. Node.js 18+ is needed later for browser rendering; skip it for now.
 
 ## 1. Install
 
-Clone the repository and set it up:
+Run the installer:
 
 ```bash
-git clone ssh://git@git.anuna.io/anuna-research/ar-crawl.git
-cd ar-crawl
-make setup
-make install
+curl -fsSL https://files.anuna.io/ar-crawl/latest/install.sh | bash
 ```
 
-`make setup` creates a `.env` file. Leave it empty: the direct service needs no API key.
+It places `ar-crawl` in `~/.local/bin`. WHEN that directory is not on your `PATH`, the installer prints the line to add to your shell profile; add it and open a new terminal.
 
 Check the install:
 
 ```bash
-racket src/cli.rkt --version
+ar-crawl --version
 ```
 
-The terminal prints `ar-crawl` and a version number.
+The terminal prints `ar-crawl` and a version number. No API key is needed for anything in this tutorial: the direct service works as installed.
 
 ## 2. Crawl one page
 

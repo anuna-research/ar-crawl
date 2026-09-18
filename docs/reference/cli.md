@@ -48,6 +48,33 @@ Every command, its options, exit codes and the typo suggestion behaviour. `ar-cr
   ar-crawl probe https://example.com -o probe-results.json
   ```
 
+- **`replay <file>`** - Replay a Chrome DevTools Recorder JSON recording
+  ```bash
+  ar-crawl replay login-flow.json -o after-login.json -v
+
+  # Film the replay as a demo bundle
+  ar-crawl replay demo/recording.json --record demo-v2/
+  ```
+  Step types and the result document: [Replay step types and output](replay.md).
+
+- **`session`** - Interactive Playwright session for LLM agents (JSON on stdin/stdout)
+  ```bash
+  ar-crawl session
+  ar-crawl session --record demo/ --viewport 1440x900
+  ```
+  Stdin commands and actions: [Session commands and actions](session.md). Bundle output: [Demo bundle format](demo-bundle.md).
+
+- **`android <subcommand>`** - Control Android emulators for mobile automation (Playwright's experimental Android API over ADB)
+  ```bash
+  ar-crawl android devices
+  ar-crawl android session <device-serial>
+  ar-crawl android replay recording.json [-d <serial>] [-s <speed>] [--screenshots]
+  ar-crawl android baseline [package|app.apk] [-o <file>] [-n <name>]
+  ar-crawl android test <script.json> [-p <package>] [--continue] [--delay <ms>]
+  ar-crawl android verify <app.apk> [-b <baseline.png>] [-s <script.json>] [-t <pct>]
+  ```
+  `ar-crawl help android` lists every option per subcommand. Design and workflow: [LLM Android verification](../llm-android-verification.md), [Android emulator support](../specs/android-emulator-support.md).
+
 - **`sample <file>`** - Show sample HTML from crawl results to help figure out XPaths
   ```bash
   # Show first result (default 5000 chars)
@@ -79,6 +106,12 @@ Every command, its options, exit codes and the typo suggestion behaviour. `ar-cr
     --xpath-map '{"title": "//h1"}'
   ```
 
+- **`stats <file.db>`** - Show statistics about a crawl database written with `--format sqlite`
+  ```bash
+  ar-crawl stats site-data.db
+  ar-crawl stats site-data.db --format json
+  ```
+
 - **`health`** - Check service health status
   ```bash
   ar-crawl health --verbose
@@ -98,6 +131,8 @@ Every command, its options, exit codes and the typo suggestion behaviour. `ar-cr
   ```bash
   ar-crawl monitor --interval 5
   ```
+
+- **`help [command]`** - Show help for a command; `ar-crawl --version` prints the version
 
 ## Configuration Commands
 
@@ -144,6 +179,18 @@ Every command, its options, exit codes and the typo suggestion behaviour. `ar-cr
 - **`--xpath-map <json>`** - JSON object mapping field names to XPath expressions
 - **`--parent <xpath>`** - Parent XPath for item extraction (use with --fields)
 - **`--fields <json>`** - JSON object mapping field names to relative XPaths (use with --parent)
+
+### Session and Replay Options
+- **`--record <dir>`** - Capture the session or replay as a demo bundle
+- **`--viewport <WxH>`** - Browser viewport (default: `1280x720` when recording)
+- **`--scale <n>`** - Device scale factor for capture (default: `2`)
+- **`--no-cursor`** - Do not track cursor events
+- **`--profile raw|demo`** - Action pacing (default: `demo` when recording, else `raw`)
+
+The bundle these produce is in [Demo bundle format](demo-bundle.md).
+
+### Stats Command Options
+- **`--format json`** - Machine-readable output (default: text)
 
 ## Exit Codes
 
