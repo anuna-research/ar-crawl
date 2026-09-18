@@ -32,7 +32,7 @@ The terminal prints `ar-crawl` and a version number. No API key is needed for an
 ## 2. Crawl one page
 
 ```bash
-racket src/cli.rkt crawl https://example.com
+ar-crawl crawl https://example.com
 ```
 
 The terminal prints a JSON document. Notice the `url`, `title` and `content` fields: that is the page, as the crawler saw it.
@@ -40,7 +40,7 @@ The terminal prints a JSON document. Notice the `url`, `title` and `content` fie
 Now keep the result:
 
 ```bash
-racket src/cli.rkt crawl https://example.com -o first.json
+ar-crawl crawl https://example.com -o first.json
 ```
 
 Open `first.json`. It holds the same document.
@@ -48,7 +48,7 @@ Open `first.json`. It holds the same document.
 ## 3. Crawl a small site
 
 ```bash
-racket src/cli.rkt crawl-site https://example.com --max-pages 5 -v -o site.json
+ar-crawl crawl-site https://example.com --max-pages 5 -v -o site.json
 ```
 
 The `-v` flag prints one line per page as it is fetched. The run stops after five pages. Open `site.json` and find the `statistics` block; `pages-crawled` reads `5` or fewer.
@@ -56,7 +56,7 @@ The `-v` flag prints one line per page as it is fetched. The run stops after fiv
 ## 4. Write the crawl to a database
 
 ```bash
-racket src/cli.rkt crawl-site https://example.com --max-pages 5 -o site.db --format sqlite
+ar-crawl crawl-site https://example.com --max-pages 5 -o site.db --format sqlite
 ```
 
 Now query it:
@@ -70,7 +70,7 @@ The terminal lists the pages you crawled, one per row.
 ## 5. Check the services
 
 ```bash
-racket src/cli.rkt health
+ar-crawl health
 ```
 
 Only the `direct` service is listed, and it reports healthy. Services without an API key are not configured yet, so they do not appear.
