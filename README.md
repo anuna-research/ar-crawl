@@ -1010,6 +1010,66 @@ Sessions produce Chrome DevTools Recorder compatible JSON with UTC timestamps:
 
 Recordings can be replayed with `ar-crawl replay my-session.json`.
 
+### Recording a Demo (`--record`)
+
+`session --record DIR` films the session as a **demo bundle**: the raw browser
+screencast plus the structured data a video editor needs to turn it into a
+product demo. The same flag on `replay` re-films a committed recording — after
+the app changes, re-run the replay instead of re-driving the browser.
+
+```bash
+# Agent films a demo while driving (1280x720 viewport, 2x capture, demo pacing)
+ar-crawl session --record demo/
+{"type": "goto", "url": "https://app.example.com", "title": "Open the dashboard"}
+{"type": "marker", "title": "Projects are sorted by last activity"}
+{"type": "click", "selector": "button:has-text('New')", "title": "Create a project"}
+{"type": "type", "selector": "#name", "text": "Q4 launch", "title": "Name it"}
+{"type": "press", "key": "Enter", "pause": 1200}
+commit
+{"status":"committed","bundle":{"dir":"demo","video":"demo/video.webm","durationMs":9800,...}}
+
+# Re-film the same flow later, at phone size
+ar-crawl replay demo/recording.json --record demo-mobile/ --viewport 390x844
+```
+
+**Bundle contents:**
+
+| File | Contents |
+|------|----------|
+| `video.webm` | Raw screencast at `viewport × scale`. No cursor is drawn in-page. |
+| `cursor.json` | Cursor event log — `move` (with `transitionMs` and `style`: pointer/text/default), `ripple`, `hide`, `show`. `tMs` is milliseconds from video start; `x`/`y` are viewport CSS pixels (multiply by `scale` for video pixels). |
+| `manifest.json` | Per-step `startMs`/`endMs`, `title`, `selector`, `success`; plus viewport, scale, profile, `durationMs`. |
+| `recording.json` | Chrome DevTools Recorder JSON, replayable. Titles and `pause` values are preserved. |
+
+Compositing the cursor, zooms and captions onto the video is deliberately
+**not** done here — ar-crawl's job is capture; the bundle is structured data for
+an editor. `t=0` is the moment the page was created; screencast frames begin
+within a frame of it.
+
+**Options** (identical on `session` and `replay`):
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--record DIR` | — | Write the bundle to DIR |
+| `--viewport WxH` | `1280x720` when recording | Browser viewport |
+| `--scale N` | `2` | Device scale factor (2 = retina-quality capture) |
+| `--no-cursor` | off | Skip cursor tracking |
+| `--profile raw\|demo` | `demo` when recording | Action pacing (see below) |
+
+**Pacing lives in the recording, not in flags**, so a committed `recording.json`
+re-films identically. The `demo` profile applies human defaults — `type` at
+80 ms/keystroke, a 500 ms hold after each action, cursor glides at 500 px/s
+(clamped 100–600 ms) — and every action accepts:
+
+- `"title"` — narration for the step (also the caption text downstream)
+- `"pause"` — milliseconds to hold after the action, overriding the profile
+
+Two demo-only actions: `{"type": "marker", "title": "..."}` is a narration-only
+step with no browser action (a chapter marker downstream), and
+`{"type": "cursor", "visible": false}` hides/shows the tracked cursor. Both are
+stored as DevTools `customStep`s so the recording stays valid Recorder JSON.
+Prefer `type` over `fill` when filming — `fill` teleports text in.
+
 ### All Supported Actions
 
 The session supports the full Playwright API:
