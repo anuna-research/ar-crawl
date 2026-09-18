@@ -11,14 +11,14 @@ This guide covers querying and exporting a crawl written with `--format sqlite`,
 
 ```bash
 # Crawl single URL to SQLite
-racket src/cli.rkt crawl https://example.com --output results.db --format sqlite
+ar-crawl crawl https://example.com --output results.db --format sqlite
 
 # Crawl entire site to database
-racket src/cli.rkt crawl-site https://news-site.com \
+ar-crawl crawl-site https://news-site.com \
   --output site-data.db --format sqlite --max-pages 100
 
 # Crawl with filters and save to SQLite
-racket src/cli.rkt crawl-site https://university.edu \
+ar-crawl crawl-site https://university.edu \
   --output research.db --format sqlite \
   --url-pattern ".*research.*" \
   --max-pages 50
@@ -69,9 +69,6 @@ sqlite3 site-data.db "
 ## Data Export and Integration
 
 ```bash
-# Run the interactive demo
-racket examples/sqlite-output-demo.rkt
-
 # Export to JSON for other tools
 sqlite3 results.db ".mode json" ".output export.json" "SELECT * FROM crawled_pages"
 
