@@ -910,7 +910,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
                    (call-with-input-file input-file
                      (lambda (port)
                        (string->jsexpr (port->string port))))])
-              (hash-ref input-data 'data '()))))))
+              ;; `crawl` writes `data`, `crawl-site` writes `pages` (bug-007)
+              (or (hash-ref input-data 'data #f)
+                  (hash-ref input-data 'pages #f)
+                  '()))))))
 
   (when (empty? items)
     (eprintf "~a: no items found in ~a~n" (color-error "error") input-file)
@@ -1006,7 +1009,8 @@ Command-line interface for the web crawler for agents with service fallbacks.
 ;; Example: {"type": "goto", "url": "https://example.com"}
 ;; Example: {"type": "click", "selector": "#button"}
 ;; Special commands: state, commit, exit
-(define (cmd-session #:verbose [verbose #f])
+(define (cmd-session #:verbose [verbose #f]
+                     #:options [session-options (hash)])
 
   ;; Start playwright service
   (start-playwright-service #:verbose verbose)
@@ -1015,6 +1019,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (printf "Starting interactive session...~n"))
 
   (define base-url (format "http://localhost:~a" PLAYWRIGHT_SERVICE_PORT))
+  (define record-opts (hash-ref session-options 'record #f))
 
   ;; Create session
   (define session-id
@@ -1024,14 +1029,23 @@ Command-line interface for the web crawler for agents with service fallbacks.
                                  (exit EXIT-ERROR))])
       (define resp (post-pure-port
                     (string->url (string-append base-url "/session/create"))
-                    (string->bytes/utf-8 "{}")
+                    (string->bytes/utf-8 (jsexpr->string session-options))
                     (list "Content-Type: application/json")))
       (define data (string->jsexpr (port->string resp)))
       (close-input-port resp)
+      (when (hash-ref data 'error #f)
+        (error (hash-ref data 'error)))
       (hash-ref data 'sessionId)))
 
   ;; Output session info as JSON for LLM consumption
-  (displayln (jsexpr->string (hash 'sessionId session-id 'status "ready")))
+  (define ready (hash 'sessionId session-id 'status "ready"))
+  (displayln (jsexpr->string
+              (if record-opts
+                  (hash-set* ready
+                             'recording #t
+                             'recordDir (hash-ref record-opts 'dir)
+                             'profile (hash-ref session-options 'profile "demo"))
+                  ready)))
   (flush-output)
 
   ;; REPL loop - accepts JSON actions
@@ -1141,16 +1155,26 @@ Command-line interface for the web crawler for agents with service fallbacks.
            (define data (string->jsexpr (port->string resp)))
            (close-input-port resp)
 
+           (when (hash-ref data 'error #f)
+             (error (hash-ref data 'error)))
            (define recording (hash-ref data 'recording (hash)))
+           (define bundle (hash-ref data 'bundle #f))
 
-           (if output-file
-               (begin
-                 (call-with-output-file output-file
-                   (lambda (port)
-                     (write-json recording port #:indent 2))
-                   #:exists 'replace)
-                 (displayln (jsexpr->string (hash 'status "committed" 'file output-file))))
-               (displayln (jsexpr->string (hash 'status "committed" 'recording recording)))))
+           (define status
+             (cond
+               [output-file
+                (call-with-output-file output-file
+                  (lambda (port)
+                    (write-json recording port #:indent 2))
+                  #:exists 'replace)
+                (hash 'status "committed" 'file output-file)]
+               ;; With --record the service already wrote recording.json into
+               ;; the bundle; don't echo the whole recording back.
+               [bundle (hash 'status "committed")]
+               [else (hash 'status "committed" 'recording recording)]))
+
+           (displayln (jsexpr->string
+                       (if bundle (hash-set status 'bundle bundle) status))))
          (void)]
 
         ;; JSON action - parse and execute
@@ -1188,7 +1212,11 @@ Command-line interface for the web crawler for agents with service fallbacks.
                            'actionTypes '("goto" "click" "fill" "type" "hover" "press" "scroll"
                                           "waitForSelector" "evaluate" "screenshot" "goBack"
                                           "goForward" "reload" "selectOption" "check" "uncheck"
-                                          "focus" "dblclick" "setViewport" "customStep"))))
+                                          "focus" "dblclick" "setViewport" "customStep"
+                                          "marker" "cursor" "waitForTimeout")
+                           'demoFields (hash
+                                        'title "narration for this step (any action)"
+                                        'pause "ms to hold after the action (any action)"))))
          (loop)]
 
         ;; Unknown command
@@ -2257,7 +2285,8 @@ Command-line interface for the web crawler for agents with service fallbacks.
 (define (cmd-replay recording-file
                     #:output [output-file #f]
                     #:format [output-format 'json]
-                    #:verbose [verbose #f])
+                    #:verbose [verbose #f]
+                    #:options [replay-options (hash)])
 
   ;; Start playwright service (replay requires it)
   (start-playwright-service #:verbose verbose)
@@ -2283,7 +2312,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
                                   (eprintf "~a: replay failed: ~a~n"
                                            (color-error "error") (exn-message e))
                                   #f)])
-      (define req-data (jsexpr->string (hash 'recording recording)))
+      (define req-data (jsexpr->string (hash-set replay-options 'recording recording)))
       (define port (post-pure-port
                     (string->url replay-url)
                     (string->bytes/utf-8 req-data)
@@ -2309,7 +2338,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (printf "Total time: ~a ms~n" (hash-ref meta 'totalTime 0)))
 
   ;; Output results
-  (define output-data
+  (define base-output
     (hash 'data (list (hash 'content (hash-ref response 'content "")
                             'url (hash-ref response 'url "")
                             'title (hash-ref response 'title "")
@@ -2317,6 +2346,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
           'metadata (hash-ref response 'metadata (hash))
           'recording (hash-ref response 'recording (hash))
           'timestamp (generate-timestamp)))
+  (define output-data
+    (if (hash-ref response 'bundle #f)
+        (hash-set base-output 'bundle (hash-ref response 'bundle))
+        base-output))
 
   (if output-file
       (begin
@@ -2882,12 +2915,23 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
 ;; @function{find-command-index}
 ;; @description{Find the index of the first non-flag argument (the command)}
+;; Global flags that consume the next argument. Their value is not the
+;; command, so `ar-crawl -s playwright crawl <url>` finds `crawl` (bug-006).
+(define VALUE-FLAGS
+  '("-s" "--service" "-c" "--config" "-o" "--output" "-f" "--format"))
+
 (define (find-command-index args)
-  (for/first ([i (in-naturals)]
-              [arg args]
-              #:when (and (not (string-prefix? arg "-"))
-                          (not (string-prefix? arg "/"))))
-    i))
+  (let loop ([i 0] [rest args] [skip-next #f])
+    (cond
+      [(empty? rest) #f]
+      [skip-next (loop (add1 i) (cdr rest) #f)]
+      [else
+       (define arg (car rest))
+       (cond
+         [(member arg VALUE-FLAGS) (loop (add1 i) (cdr rest) #t)]
+         [(or (string-prefix? arg "-") (string-prefix? arg "/"))
+          (loop (add1 i) (cdr rest) #f)]
+         [else i])])))
 
 ;; @function{split-args-at-command}
 ;; @description{Split argument list at the command position}
@@ -2979,6 +3023,16 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (output-file-param file)]
    [("-f" "--format") fmt "Output format: json"
     (output-format-param (string->symbol fmt))]
+   [("--record") dir "Film the replay as a demo bundle in DIR"
+    (record-dir-param dir)]
+   [("--viewport") size "Browser viewport WxH (default: 1280x720 when recording)"
+    (record-viewport-param (parse-viewport-arg size))]
+   [("--scale") n "Device scale factor for capture (default: 2)"
+    (record-scale-param (parse-positive-number-arg "--scale" n))]
+   [("--no-cursor") "Do not track cursor events"
+    (record-cursor-param #f)]
+   [("--profile") name "Action pacing: raw | demo (default: demo when recording)"
+    (record-profile-param (parse-profile-arg name))]
    #:args ()
    (void)))
 
@@ -2991,8 +3045,66 @@ Command-line interface for the web crawler for agents with service fallbacks.
    #:once-each
    [("-v" "--verbose") "Enable verbose output"
     (verbose-mode #t)]
+   [("--record") dir "Capture the session as a demo bundle in DIR"
+    (record-dir-param dir)]
+   [("--viewport") size "Browser viewport WxH (default: 1280x720 when recording)"
+    (record-viewport-param (parse-viewport-arg size))]
+   [("--scale") n "Device scale factor for capture (default: 2)"
+    (record-scale-param (parse-positive-number-arg "--scale" n))]
+   [("--no-cursor") "Do not track cursor events"
+    (record-cursor-param #f)]
+   [("--profile") name "Action pacing: raw | demo (default: demo when recording)"
+    (record-profile-param (parse-profile-arg name))]
    #:args ()
    (void)))
+
+;; @function{parse-viewport-arg}
+;; @description{Parse a WxH viewport argument into (cons width height)}
+(define (parse-viewport-arg s)
+  (define m (regexp-match #px"^(\\d+)x(\\d+)$" s))
+  (unless m
+    (die-usage "invalid --viewport '~a' (expected WIDTHxHEIGHT, e.g. 1280x720)" s))
+  (cons (string->number (cadr m)) (string->number (caddr m))))
+
+;; @function{parse-positive-number-arg}
+;; @description{Parse a positive numeric flag value}
+(define (parse-positive-number-arg flag s)
+  (define n (string->number s))
+  (unless (and n (> n 0))
+    (die-usage "invalid ~a '~a' (expected a positive number)" flag s))
+  n)
+
+;; @function{parse-profile-arg}
+;; @description{Validate a --profile name}
+(define (parse-profile-arg s)
+  (define p (string->symbol s))
+  (unless (memq p '(raw demo))
+    (die-usage "invalid --profile '~a' (expected raw or demo)" s))
+  p)
+
+;; @function{recording-options}
+;; @description{Build the JSON options shared by session/replay requests from
+;; the record-* parameters. Returns a hash of keys to merge into the request
+;; body: viewport, profile, and record (when --record was given).}
+(define (recording-options)
+  (define record-dir (record-dir-param))
+  (define viewport
+    (or (record-viewport-param)
+        (and record-dir (cons 1280 720))))
+  (define profile
+    (or (record-profile-param)
+        (and record-dir 'demo)))
+  (define opts (hash))
+  (when viewport
+    (set! opts (hash-set opts 'viewport (hash 'width (car viewport) 'height (cdr viewport)))))
+  (when profile
+    (set! opts (hash-set opts 'profile (symbol->string profile))))
+  (when record-dir
+    (set! opts (hash-set opts 'record
+                         (hash 'dir (path->string (path->complete-path record-dir))
+                               'scale (or (record-scale-param) 2)
+                               'cursor (record-cursor-param)))))
+  opts)
 
 ;; @function{parse-crawl-args}
 ;; @description{Parse crawl command arguments after the URL}
@@ -3326,12 +3438,14 @@ Command-line interface for the web crawler for agents with service fallbacks.
           (cmd-replay recording-file
                       #:verbose (verbose-mode)
                       #:output (output-file-param)
-                      #:format (output-format-param)))]
+                      #:format (output-format-param)
+                      #:options (recording-options)))]
 
        [(session)
         (parse-session-args post-cmd-args)
         (with-playwright-cleanup
-          (cmd-session #:verbose (verbose-mode)))]
+          (cmd-session #:verbose (verbose-mode)
+                       #:options (recording-options)))]
 
        [(android)
         (when (empty? post-cmd-args)
@@ -3477,6 +3591,13 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
 ;; Initialize global parameters
 (define verbose-mode (make-parameter #f))
+
+;; Demo recording options (session --record / replay --record)
+(define record-dir-param (make-parameter #f))
+(define record-viewport-param (make-parameter #f))   ; (cons width height)
+(define record-scale-param (make-parameter #f))
+(define record-cursor-param (make-parameter #t))
+(define record-profile-param (make-parameter #f))    ; 'raw | 'demo
 (define quiet-mode (make-parameter #f))
 (define config-file-path (make-parameter #f))
 (define selected-services (make-parameter '()))
@@ -4135,7 +4256,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "OPTIONS~n")
   (printf "  -v, --verbose       Show detailed step execution~n")
   (printf "  -o, --output FILE   Save results to JSON file~n")
-  (printf "  -f, --format FMT    Output format: json (default)~n~n")
+  (printf "  -f, --format FMT    Output format: json (default)~n")
+  (printf "      --record DIR    Film the replay as a demo bundle (same bundle and flags as~n")
+  (printf "                      'session --record': --viewport, --scale, --no-cursor, --profile)~n~n")
 
   (printf "RECORDING FORMAT~n")
   (printf "  Chrome DevTools Recorder exports JSON files with interaction steps.~n~n")
@@ -4195,7 +4318,35 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  ar-crawl session [options]~n~n")
 
   (printf "OPTIONS~n")
-  (printf "  -v, --verbose       Show debug output~n~n")
+  (printf "  -v, --verbose       Show debug output~n")
+  (printf "      --record DIR    Capture the session as a demo bundle (see RECORD OUTPUT)~n")
+  (printf "      --viewport WxH  Browser viewport (default: 1280x720 when recording)~n")
+  (printf "      --scale N       Device scale factor, 2 for retina-quality capture (default: 2)~n")
+  (printf "      --no-cursor     Do not track cursor events~n")
+  (printf "      --profile NAME  Action pacing: raw | demo (default: raw;~n")
+  (printf "                      --record implies demo unless overridden)~n~n")
+
+  (printf "PROFILES~n")
+  (printf "  raw     Playwright defaults. fill is instant, no pauses. For crawling.~n")
+  (printf "  demo    Human pacing. type delay 80ms, 500ms hold after each action,~n")
+  (printf "          cursor glides at 500px/s. For filming.~n~n")
+
+  (printf "DEMO STEP FIELDS (any action)~n")
+  (printf "  \"title\": \"...\"        Narration for this step. Kept in the recording; becomes~n")
+  (printf "                        a caption/marker in the bundle manifest.~n")
+  (printf "  \"pause\": MS           Hold after the action completes (overrides profile)~n~n")
+
+  (printf "DEMO ACTIONS~n")
+  (printf "  {\"type\": \"marker\", \"title\": \"...\"}     Narration-only step, no browser action~n")
+  (printf "  {\"type\": \"cursor\", \"visible\": false}   Hide/show the tracked cursor~n")
+  (printf "  {\"type\": \"waitForTimeout\", \"timeout\": 800}  Hold on screen (kept when recording)~n~n")
+
+  (printf "RECORD OUTPUT~n")
+  (printf "  DIR/~n")
+  (printf "    recording.json      Chrome DevTools Recorder format (replayable)~n")
+  (printf "    video.webm          Raw screencast, no cursor drawn, at --scale resolution~n")
+  (printf "    cursor.json         Cursor event log (move/ripple/hide/show), viewport CSS px~n")
+  (printf "    manifest.json       Step timings + narration, ms from video start~n~n")
 
   (printf "COMMANDS (stdin)~n")
   (printf "  {\"type\": \"...\", ...}   Execute Playwright action (JSON)~n")
@@ -4474,6 +4625,30 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  - WebView automation requires Chrome 87+ on device~n")
   (printf "  - For browser testing, use 'launchBrowser' action~n~n"))
 
+;; @function{show-stats-help}
+;; @description{Show help for the stats command}
+(define (show-stats-help)
+  (printf "~nSTATS - Show statistics about a crawl database~n")
+  (printf "==============================================~n~n")
+  (printf "Summarise a SQLite database written with --format sqlite: page counts,~n")
+  (printf "failures, discovered links, content sizes and crawl sessions.~n~n")
+
+  (printf "USAGE~n")
+  (printf "  ar-crawl stats <file.db> [options]~n~n")
+
+  (printf "OPTIONS~n")
+  (printf "  -v, --verbose       Show additional detail~n")
+  (printf "  -f, --format FMT    Output format: json (default: human-readable text)~n~n")
+
+  (printf "EXAMPLES~n")
+  (printf "  # Summarise a crawl database~n")
+  (printf "  ar-crawl stats site-data.db~n~n")
+  (printf "  # Machine-readable, for an agent~n")
+  (printf "  ar-crawl stats site-data.db --format json~n~n")
+
+  (printf "SEE ALSO~n")
+  (printf "  ar-crawl crawl-site <url> --output site-data.db --format sqlite~n~n"))
+
 ;; @function{show-command-help}
 ;; @description{Show help for a specific command}
 (define (show-command-help command)
@@ -4486,6 +4661,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(android) (show-android-help)]
     [(extract) (show-extract-help)]
     [(sample) (show-sample-help)]
+    [(stats) (show-stats-help)]
     [(health) (show-health-help)]
     [(test) (show-test-help)]
     [(config) (show-config-help)]
@@ -4493,7 +4669,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
     [(monitor) (show-monitor-help)]
     [else
      (printf "Unknown command: ~a~n~n" command)
-     (printf "Available commands: crawl, crawl-site, probe, replay, session, android, extract, sample, health, test, config, services, monitor~n")
+     (printf "Available commands: crawl, crawl-site, probe, replay, session, android, extract, sample, stats, health, test, config, services, monitor~n")
      (printf "Run 'ar-crawl help <command>' for help on a specific command.~n")]))
 
 ;; Site crawler parameters
@@ -4536,10 +4712,73 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (test-case "find-command-index - command first"
     (check-equal? (find-command-index '("crawl" "http://example.com")) 0))
 
-  (test-case "find-command-index - flags before command"
-    ;; -v is a flag, --config is a flag, file.json is a positional (command), crawl is also positional
-    ;; The first non-flag is file.json at index 2
-    (check-equal? (find-command-index '("-v" "--config" "file.json" "crawl")) 2))
+  ;; -------------------------------------------------------------------------
+  ;; Demo recording options (session/replay --record)
+  ;; -------------------------------------------------------------------------
+
+  (test-case "parse-viewport-arg - WxH"
+    (check-equal? (parse-viewport-arg "1280x720") (cons 1280 720))
+    (check-equal? (parse-viewport-arg "390x844") (cons 390 844)))
+
+  (test-case "parse-profile-arg - accepted names"
+    (check-equal? (parse-profile-arg "raw") 'raw)
+    (check-equal? (parse-profile-arg "demo") 'demo))
+
+  (test-case "recording-options - nothing set means no options"
+    (parameterize ([record-dir-param #f]
+                   [record-viewport-param #f]
+                   [record-scale-param #f]
+                   [record-cursor-param #t]
+                   [record-profile-param #f])
+      (check-equal? (recording-options) (hash))))
+
+  (test-case "recording-options - --record implies demo profile and 1280x720"
+    (parameterize ([record-dir-param "demo"]
+                   [record-viewport-param #f]
+                   [record-scale-param #f]
+                   [record-cursor-param #t]
+                   [record-profile-param #f])
+      (define opts (recording-options))
+      (check-equal? (hash-ref opts 'profile) "demo")
+      (check-equal? (hash-ref opts 'viewport) (hash 'width 1280 'height 720))
+      (define rec (hash-ref opts 'record))
+      (check-equal? (hash-ref rec 'scale) 2)
+      (check-true (hash-ref rec 'cursor))
+      ;; dir is sent absolute so the service (same machine) writes where the
+      ;; user expects regardless of its own cwd
+      (check-true (absolute-path? (hash-ref rec 'dir)))))
+
+  (test-case "recording-options - explicit flags override the record defaults"
+    (parameterize ([record-dir-param "demo"]
+                   [record-viewport-param (cons 390 844)]
+                   [record-scale-param 1]
+                   [record-cursor-param #f]
+                   [record-profile-param 'raw])
+      (define opts (recording-options))
+      (check-equal? (hash-ref opts 'profile) "raw")
+      (check-equal? (hash-ref opts 'viewport) (hash 'width 390 'height 844))
+      (check-equal? (hash-ref (hash-ref opts 'record) 'scale) 1)
+      (check-false (hash-ref (hash-ref opts 'record) 'cursor))))
+
+  (test-case "recording-options - viewport/profile usable without --record"
+    (parameterize ([record-dir-param #f]
+                   [record-viewport-param (cons 1024 768)]
+                   [record-scale-param #f]
+                   [record-cursor-param #t]
+                   [record-profile-param 'demo])
+      (define opts (recording-options))
+      (check-false (hash-has-key? opts 'record))
+      (check-equal? (hash-ref opts 'profile) "demo")
+      (check-equal? (hash-ref opts 'viewport) (hash 'width 1024 'height 768))))
+
+  (test-case "find-command-index - value flags before command are skipped (bug-006)"
+    ;; --config consumes file.json, so the command is crawl at index 3
+    (check-equal? (find-command-index '("-v" "--config" "file.json" "crawl")) 3)
+    (check-equal? (find-command-index '("-s" "playwright" "crawl" "http://x")) 2)
+    (check-equal? (find-command-index '("-s" "playwright" "-s" "direct" "-v" "crawl" "http://x")) 5))
+
+  (test-case "find-command-index - value flag with no value"
+    (check-false (find-command-index '("-s"))))
 
   (test-case "find-command-index - no command"
     (check-false (find-command-index '("-v" "--help"))))
@@ -4554,12 +4793,12 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (check-equal? post '("http://test.com")))
 
   (test-case "split-args-at-command - with flags"
-    ;; -v is a flag, -c is a flag, config.json is the first non-flag (becomes command)
+    ;; -c consumes config.json; crawl-site is the command (bug-006)
     (define-values (pre cmd post)
       (split-args-at-command '("-v" "-c" "config.json" "crawl-site" "http://test.com" "--max-pages" "10")))
-    (check-equal? pre '("-v" "-c"))
-    (check-equal? cmd "config.json")
-    (check-equal? post '("crawl-site" "http://test.com" "--max-pages" "10")))
+    (check-equal? pre '("-v" "-c" "config.json"))
+    (check-equal? cmd "crawl-site")
+    (check-equal? post '("http://test.com" "--max-pages" "10")))
 
   (test-case "split-args-at-command - no command"
     (define-values (pre cmd post) (split-args-at-command '("-v" "--help")))

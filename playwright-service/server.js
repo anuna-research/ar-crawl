@@ -3,6 +3,8 @@ const { chromium } = require('playwright-extra');
 const { _android } = require('playwright');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { PNG } = require('pngjs');
 
 // Session storage
@@ -33,15 +35,35 @@ function log(...args) {
 // Convert session step to Chrome DevTools Recorder format
 // Returns null for steps that should not be recorded
 // See: https://github.com/niconiahi/replay/blob/main/src/Schema.ts
-function toDevToolsFormat(action) {
+function toDevToolsFormat(action, { keepWaits = false } = {}) {
   // Filter out unsupported/internal step types
   // Chrome DevTools Recorder doesn't support: wait*, screenshot, evaluate
-  const unsupportedTypes = ['waitForLoadState', 'waitForTimeout', 'waitForNavigation', 'screenshot', 'evaluate'];
+  const unsupportedTypes = ['waitForLoadState', 'waitForNavigation', 'screenshot', 'evaluate'];
+  // Timed waits are pacing; a demo recording keeps them so it re-films
+  // identically (ar-crawl replay understands them, Chrome's Recorder does not).
+  if (!keepWaits) unsupportedTypes.push('waitForTimeout');
   if (unsupportedTypes.includes(action.type)) {
     return null;
   }
 
+  // Demo-only steps travel as customSteps so the recording stays valid
+  // DevTools Recorder JSON; executeAction unwraps them on replay.
+  if (action.type === 'marker') {
+    const step = { type: 'customStep', name: 'marker', parameters: { title: action.title || '' } };
+    if (action.pause !== undefined) step.pause = action.pause;
+    return step;
+  }
+  if (action.type === 'cursor') {
+    return { type: 'customStep', name: 'cursor', parameters: { visible: action.visible !== false } };
+  }
+
   const step = { type: action.type };
+
+  // Narration / reasoning annotation and per-step hold are preserved
+  // (DevTools Recorder displays `title`; `pause` is ar-crawl pacing).
+  if (action.title) step.title = action.title;
+  if (action.pause !== undefined) step.pause = action.pause;
+  if (action.type === 'waitForTimeout') step.timeout = action.timeout || 1000;
 
   // Map action types to DevTools Recorder types
   const typeMap = {
@@ -2204,16 +2226,222 @@ async function replayAndroidRecording(options = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Demo recording (session --record)
+//
+// A recording session captures three things alongside the normal step log:
+//   - the raw Playwright screencast (video.webm, no cursor drawn in-page)
+//   - a cursor event log (cursor.json) — moves/ripples/hide/show with ms
+//     offsets from video start, in viewport CSS pixels
+//   - per-step timings + narration titles (manifest.json)
+// Compositing the cursor onto the video is deliberately NOT done here; the
+// bundle is structured data for a downstream editor (ar-edit).
+// ---------------------------------------------------------------------------
+
+const DEMO_PROFILE_DEFAULTS = {
+  typeDelayMs: 80,      // per-keystroke delay for `type`
+  pauseAfterMs: 500,    // hold after each paced action
+  cursorSpeedPxPerSec: 500,
+  cursorMinMs: 100,
+  cursorMaxMs: 600,
+  rippleSize: 100
+};
+
+// Actions the cursor glides to before executing.
+const CURSOR_TARGET_ACTIONS = new Set([
+  'click', 'dblclick', 'doubleClick', 'fill', 'change', 'type', 'hover', 'focus',
+  'check', 'uncheck', 'selectOption', 'clear', 'scrollIntoView'
+]);
+// Actions that produce a click ripple on success.
+const RIPPLE_ACTIONS = new Set(['click', 'dblclick', 'doubleClick', 'check', 'uncheck']);
+// Actions that get the demo-profile hold afterwards.
+const PACED_ACTIONS = new Set([
+  ...CURSOR_TARGET_ACTIONS, 'goto', 'navigate', 'goBack', 'goForward', 'reload',
+  'press', 'keyDown', 'insertText', 'scroll', 'marker'
+]);
+// Agent introspection — never part of the demo timeline.
+const INTROSPECTION_ACTIONS = new Set(['screenshot', 'evaluate', 'getElementInfo', 'query', 'locator']);
+
+// DevTools Recorder aliases -> Playwright action names (inverse of the
+// mapping in toDevToolsFormat). Demo steps travel as customSteps.
+function normalizeDevToolsAction(action) {
+  switch (action.type) {
+    case 'navigate': return { ...action, type: 'goto' };
+    case 'change': return { ...action, type: 'fill' };
+    case 'doubleClick': return { ...action, type: 'dblclick' };
+    case 'keyDown':
+      // toDevToolsFormat records `type` as keyDown+text (keySequence is not
+      // a valid Recorder step); a keyDown with a real `key` is left alone.
+      return action.text !== undefined && !action.key ? { ...action, type: 'type' } : action;
+    case 'customStep': {
+      const params = action.parameters || {};
+      if (action.name === 'marker') return { ...action, type: 'marker', title: action.title || params.title };
+      if (action.name === 'cursor') return { ...action, type: 'cursor', visible: params.visible !== false };
+      return action;
+    }
+    default: return action;
+  }
+}
+
+function recordingElapsedMs(session) {
+  return Date.now() - session.record.t0;
+}
+
+// Detect which cursor glyph the target wants (pointer / text / default),
+// mirroring what a real OS cursor would show over that element.
+async function detectCursorStyle(locator) {
+  return locator.evaluate((el) => {
+    const computed = window.getComputedStyle(el).cursor;
+    if (computed === 'pointer' || computed === 'text') return computed;
+    if (computed && computed !== 'auto' && computed !== 'default') return 'default';
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'a' || tag === 'button' || tag === 'select' || tag === 'summary' ||
+        el.closest('a') || el.closest('button') ||
+        el.getAttribute('role') === 'button' || el.getAttribute('role') === 'link') {
+      return 'pointer';
+    }
+    if (tag === 'textarea' || el.isContentEditable) return 'text';
+    if (tag === 'input') {
+      const t = (el.type || 'text').toLowerCase();
+      return ['text', 'search', 'url', 'tel', 'email', 'password', 'number', ''].includes(t)
+        ? 'text' : 'pointer';
+    }
+    return 'default';
+  }).catch(() => 'default');
+}
+
+// Log a cursor move to the centre of `selector` and wait for the glide so the
+// footage has a gap of the right length for the (later-composited) cursor.
+async function recordCursorMove(session, selector) {
+  const rec = session.record;
+  if (!rec || !rec.cursor) return;
+  const locator = session.page.locator(selector).first();
+  const box = await locator.boundingBox().catch(() => null);
+  if (!box) return;
+
+  const x = Math.round(box.x + box.width / 2);
+  const y = Math.round(box.y + box.height / 2);
+  let transitionMs = 0;
+  if (rec.cursorMoved) {
+    const dx = x - rec.cursorPos.x;
+    const dy = y - rec.cursorPos.y;
+    const ms = (Math.hypot(dx, dy) / DEMO_PROFILE_DEFAULTS.cursorSpeedPxPerSec) * 1000;
+    transitionMs = Math.round(Math.max(DEMO_PROFILE_DEFAULTS.cursorMinMs,
+                                       Math.min(DEMO_PROFILE_DEFAULTS.cursorMaxMs, ms)));
+  }
+  const style = await detectCursorStyle(locator);
+
+  rec.cursorEvents.push({ tMs: recordingElapsedMs(session), type: 'move', x, y, transitionMs, style });
+  rec.cursorPos = { x, y };
+  rec.cursorMoved = true;
+  if (transitionMs > 0) {
+    await session.page.waitForTimeout(transitionMs + 50);
+  }
+}
+
+function recordCursorRipple(session) {
+  const rec = session.record;
+  if (!rec || !rec.cursor || !rec.cursorMoved) return;
+  rec.cursorEvents.push({
+    tMs: recordingElapsedMs(session), type: 'ripple',
+    x: rec.cursorPos.x, y: rec.cursorPos.y, size: DEMO_PROFILE_DEFAULTS.rippleSize
+  });
+}
+
+function recordCursorVisibility(session, visible) {
+  const rec = session.record;
+  if (!rec || !rec.cursor) return;
+  rec.cursorEvents.push({ tMs: recordingElapsedMs(session), type: visible ? 'show' : 'hide' });
+}
+
+// Close the context (which finalises the screencast) and write the bundle.
+async function finalizeSessionRecording(session, recording) {
+  const rec = session.record;
+  const video = session.page.video();
+  const durationMs = recordingElapsedMs(session);
+  await session.context.close();
+
+  fs.mkdirSync(rec.dir, { recursive: true });
+  const videoPath = path.join(rec.dir, 'video.webm');
+  if (video) {
+    const tmpPath = await video.path();
+    fs.renameSync(tmpPath, videoPath);
+  }
+
+  const manifest = {
+    version: 1,
+    video: 'video.webm',
+    cursor: 'cursor.json',
+    recording: 'recording.json',
+    startedAt: new Date(rec.t0).toISOString(),
+    viewport: session.viewport,
+    scale: rec.scale,
+    profile: session.profile,
+    durationMs,
+    steps: rec.steps
+  };
+  const cursor = { coordinateSpace: 'viewport-css-px', scale: rec.scale, events: rec.cursorEvents };
+
+  fs.writeFileSync(path.join(rec.dir, 'recording.json'), JSON.stringify(recording, null, 2));
+  fs.writeFileSync(path.join(rec.dir, 'cursor.json'), JSON.stringify(cursor, null, 2));
+  fs.writeFileSync(path.join(rec.dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  rec.finalized = true;
+
+  return {
+    dir: rec.dir,
+    video: video ? videoPath : null,
+    manifest: path.join(rec.dir, 'manifest.json'),
+    durationMs,
+    steps: rec.steps.length,
+    cursorEvents: rec.cursorEvents.length
+  };
+}
+
 // Session management
 async function createSession(options = {}) {
   const sessionId = uuidv4();
   const {
     viewport = { width: 1920, height: 1080 },
-    userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    record = null,
+    profile = record ? 'demo' : 'raw'
   } = options;
 
+  if (!['raw', 'demo'].includes(profile)) {
+    throw new Error(`Unknown profile '${profile}' (expected raw or demo)`);
+  }
+
+  const contextOptions = { viewport, userAgent };
+  let recordState = null;
+  if (record) {
+    if (!record.dir) throw new Error('record.dir is required');
+    const scale = Number(record.scale) || 2;
+    fs.mkdirSync(record.dir, { recursive: true });
+    contextOptions.deviceScaleFactor = scale;
+    contextOptions.recordVideo = {
+      dir: record.dir,
+      size: { width: viewport.width * scale, height: viewport.height * scale }
+    };
+    recordState = {
+      dir: record.dir,
+      scale,
+      cursor: record.cursor !== false,
+      t0: 0,
+      steps: [],
+      cursorEvents: [],
+      cursorPos: { x: 0, y: 0 },
+      cursorMoved: false,
+      finalized: false
+    };
+  }
+
   const b = await initBrowser();
-  const context = await b.newContext({ viewport, userAgent });
+  const context = await b.newContext(contextOptions);
+  if (recordState) {
+    // The screencast starts as part of page creation, so the bundle's t=0
+    // is stamped just before it; frames begin within a few ms of this.
+    recordState.t0 = Date.now();
+  }
   const page = await context.newPage();
 
   // Initialize session state
@@ -2225,7 +2453,9 @@ async function createSession(options = {}) {
     lastActivity: Date.now(),
     steps: [],
     viewport,
-    userAgent
+    userAgent,
+    profile,
+    record: recordState
   };
 
   sessions.set(sessionId, session);
@@ -2243,13 +2473,29 @@ async function executeAction(sessionId, action) {
   session.lastActivity = Date.now();
   const { page, context } = session;
   const result = { success: true };
+
+  // Normalise Chrome DevTools Recorder step names to the Playwright action
+  // names used live, so a replayed recording behaves — and is recorded in the
+  // demo bundle — exactly like the session that produced it.
+  action = normalizeDevToolsAction(action);
+
   const stepRecord = {
     type: action.type,
     ...action,
     timestamp: new Date().toISOString()
   };
 
+  const rec = session.record;
+  const demo = session.profile === 'demo';
+  const stepStartMs = rec ? recordingElapsedMs(session) : null;
+
   try {
+    // Glide the (logged) cursor to the target before acting on it.
+    if (rec && CURSOR_TARGET_ACTIONS.has(action.type)) {
+      const target = action.selector || (action.selectors && resolveSelector(action.selectors));
+      if (target) await recordCursorMove(session, target);
+    }
+
     switch (action.type) {
       // Navigation actions (matching Playwright API)
       case 'goto':
@@ -2323,7 +2569,7 @@ async function executeAction(sessionId, action) {
       case 'type':
         const typeSelector = action.selector || resolveSelector(action.selectors);
         await page.type(typeSelector, action.text || action.value, {
-          delay: action.delay,
+          delay: action.delay ?? (demo ? DEMO_PROFILE_DEFAULTS.typeDelayMs : undefined),
           timeout: action.timeout || 30000
         });
         result.selector = typeSelector;
@@ -2643,6 +2889,16 @@ async function executeAction(sessionId, action) {
         // Just record it, no browser action
         break;
 
+      // Demo: narration-only step, no browser action. Becomes a chapter
+      // marker in the recording bundle.
+      case 'marker':
+        break;
+
+      // Demo: hide/show the tracked cursor (no in-page effect).
+      case 'cursor':
+        recordCursorVisibility(session, action.visible !== false);
+        break;
+
       // Get element info (useful for agents)
       case 'getElementInfo':
         const infoSelector = action.selector || resolveSelector(action.selectors);
@@ -2765,6 +3021,19 @@ async function executeAction(sessionId, action) {
           stepRecord.warning = `Unknown action type: ${action.type}`;
         }
     }
+
+    if (rec && RIPPLE_ACTIONS.has(action.type)) {
+      recordCursorRipple(session);
+    }
+
+    // Pacing lives in the step (`pause`), with a profile default, so a
+    // committed recording re-films identically.
+    const pauseMs = action.pause !== undefined
+      ? Number(action.pause)
+      : (demo && PACED_ACTIONS.has(action.type) ? DEMO_PROFILE_DEFAULTS.pauseAfterMs : 0);
+    if (pauseMs > 0) {
+      await page.waitForTimeout(pauseMs);
+    }
   } catch (error) {
     result.success = false;
     result.error = error.message;
@@ -2773,9 +3042,24 @@ async function executeAction(sessionId, action) {
   } finally {
     // Record step in Chrome DevTools Recorder format (for compatibility)
     // Skip unsupported step types (toDevToolsFormat returns null for these)
-    const devToolsStep = toDevToolsFormat(stepRecord);
+    const devToolsStep = toDevToolsFormat(stepRecord, { keepWaits: !!rec });
     if (devToolsStep) {
       session.steps.push(devToolsStep);
+    }
+
+    if (rec && !INTROSPECTION_ACTIONS.has(action.type)) {
+      const step = {
+        index: rec.steps.length,
+        type: action.type,
+        startMs: stepStartMs,
+        endMs: recordingElapsedMs(session),
+        success: result.success
+      };
+      if (action.title) step.title = action.title;
+      if (result.selector || action.selector) step.selector = result.selector || action.selector;
+      if (action.url) step.url = action.url;
+      if (action.pause !== undefined) step.pause = Number(action.pause);
+      rec.steps.push(step);
     }
   }
 
@@ -2982,7 +3266,17 @@ async function getAccessibilitySnapshot(page) {
 async function closeSession(sessionId) {
   const session = sessions.get(sessionId);
   if (session) {
-    await session.context.close();
+    const rec = session.record;
+    const video = rec && !rec.finalized ? session.page.video() : null;
+    if (!rec || !rec.finalized) {
+      await session.context.close();
+    }
+    if (video) {
+      // `exit` on a recording session: drop the screencast rather than leave
+      // an anonymous .webm behind, and the bundle dir if nothing else is in it.
+      await video.delete().catch(() => {});
+      try { fs.rmdirSync(rec.dir); } catch {}
+    }
     sessions.delete(sessionId);
     log(`Session closed: ${sessionId}`);
   }
@@ -3120,6 +3414,58 @@ async function probePage(options) {
     };
   } finally {
     await context.close();
+  }
+}
+
+// Replay through a recording session so `replay --record` yields exactly the
+// bundle a live `session --record` would (same cursor log, timings, pacing).
+async function replayRecordingWithBundle(options) {
+  const { recording, viewport, userAgent, record, profile, stopOnError = false } = options;
+  const startTime = Date.now();
+  const sessionId = await createSession({ viewport, userAgent, record, profile });
+  const session = sessions.get(sessionId);
+  const stepResults = [];
+
+  try {
+    for (let i = 0; i < recording.steps.length; i++) {
+      const step = recording.steps[i];
+      const stepStart = Date.now();
+      const stepResult = { index: i, type: step.type, success: true };
+      try {
+        await executeAction(sessionId, step);
+      } catch (error) {
+        stepResult.success = false;
+        stepResult.error = error.message;
+      }
+      stepResult.duration = Date.now() - stepStart;
+      stepResults.push(stepResult);
+      if (!stepResult.success && stopOnError) break;
+    }
+
+    const page = session.page;
+    const url = page.url();
+    const title = await page.title().catch(() => '');
+    const bundle = await finalizeSessionRecording(session, {
+      title: recording.title || 'Replay',
+      steps: session.steps
+    });
+
+    return {
+      url,
+      title,
+      content: '',
+      links: [],
+      metadata: { totalTime: Date.now() - startTime, method: 'playwright-replay-record' },
+      recording: {
+        title: recording.title,
+        stepsExecuted: stepResults.length,
+        stepResults,
+        method: 'playwright-replay-record'
+      },
+      bundle
+    };
+  } finally {
+    await closeSession(sessionId);
   }
 }
 
@@ -3609,7 +3955,9 @@ const server = http.createServer(async (req, res) => {
       }
 
       log(`Replaying recording: ${options.recording.title || 'untitled'}`);
-      const result = await replayRecording(options);
+      const result = options.record
+        ? await replayRecordingWithBundle(options)
+        : await replayRecording(options);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
@@ -3707,10 +4055,14 @@ const server = http.createServer(async (req, res) => {
                  steps: session.steps
              };
 
+             let bundle;
+             if (session.record) {
+               bundle = await finalizeSessionRecording(session, recording);
+             }
              await closeSession(sessionId);
 
              res.writeHead(200, { 'Content-Type': 'application/json' });
-             res.end(JSON.stringify({ recording }));
+             res.end(JSON.stringify(bundle ? { recording, bundle } : { recording }));
          } catch (error) {
              console.error('Session commit error:', error.message);
              res.writeHead(500, { 'Content-Type': 'application/json' });
