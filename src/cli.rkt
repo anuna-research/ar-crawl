@@ -910,7 +910,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
                    (call-with-input-file input-file
                      (lambda (port)
                        (string->jsexpr (port->string port))))])
-              (hash-ref input-data 'data '()))))))
+              ;; `crawl` writes `data`, `crawl-site` writes `pages` (bug-007)
+              (or (hash-ref input-data 'data #f)
+                  (hash-ref input-data 'pages #f)
+                  '()))))))
 
   (when (empty? items)
     (eprintf "~a: no items found in ~a~n" (color-error "error") input-file)
@@ -2912,12 +2915,23 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
 ;; @function{find-command-index}
 ;; @description{Find the index of the first non-flag argument (the command)}
+;; Global flags that consume the next argument. Their value is not the
+;; command, so `ar-crawl -s playwright crawl <url>` finds `crawl` (bug-006).
+(define VALUE-FLAGS
+  '("-s" "--service" "-c" "--config" "-o" "--output" "-f" "--format"))
+
 (define (find-command-index args)
-  (for/first ([i (in-naturals)]
-              [arg args]
-              #:when (and (not (string-prefix? arg "-"))
-                          (not (string-prefix? arg "/"))))
-    i))
+  (let loop ([i 0] [rest args] [skip-next #f])
+    (cond
+      [(empty? rest) #f]
+      [skip-next (loop (add1 i) (cdr rest) #f)]
+      [else
+       (define arg (car rest))
+       (cond
+         [(member arg VALUE-FLAGS) (loop (add1 i) (cdr rest) #t)]
+         [(or (string-prefix? arg "-") (string-prefix? arg "/"))
+          (loop (add1 i) (cdr rest) #f)]
+         [else i])])))
 
 ;; @function{split-args-at-command}
 ;; @description{Split argument list at the command position}
@@ -4757,10 +4771,14 @@ Command-line interface for the web crawler for agents with service fallbacks.
       (check-equal? (hash-ref opts 'profile) "demo")
       (check-equal? (hash-ref opts 'viewport) (hash 'width 1024 'height 768))))
 
-  (test-case "find-command-index - flags before command"
-    ;; -v is a flag, --config is a flag, file.json is a positional (command), crawl is also positional
-    ;; The first non-flag is file.json at index 2
-    (check-equal? (find-command-index '("-v" "--config" "file.json" "crawl")) 2))
+  (test-case "find-command-index - value flags before command are skipped (bug-006)"
+    ;; --config consumes file.json, so the command is crawl at index 3
+    (check-equal? (find-command-index '("-v" "--config" "file.json" "crawl")) 3)
+    (check-equal? (find-command-index '("-s" "playwright" "crawl" "http://x")) 2)
+    (check-equal? (find-command-index '("-s" "playwright" "-s" "direct" "-v" "crawl" "http://x")) 5))
+
+  (test-case "find-command-index - value flag with no value"
+    (check-false (find-command-index '("-s"))))
 
   (test-case "find-command-index - no command"
     (check-false (find-command-index '("-v" "--help"))))
@@ -4775,12 +4793,12 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (check-equal? post '("http://test.com")))
 
   (test-case "split-args-at-command - with flags"
-    ;; -v is a flag, -c is a flag, config.json is the first non-flag (becomes command)
+    ;; -c consumes config.json; crawl-site is the command (bug-006)
     (define-values (pre cmd post)
       (split-args-at-command '("-v" "-c" "config.json" "crawl-site" "http://test.com" "--max-pages" "10")))
-    (check-equal? pre '("-v" "-c"))
-    (check-equal? cmd "config.json")
-    (check-equal? post '("crawl-site" "http://test.com" "--max-pages" "10")))
+    (check-equal? pre '("-v" "-c" "config.json"))
+    (check-equal? cmd "crawl-site")
+    (check-equal? post '("http://test.com" "--max-pages" "10")))
 
   (test-case "split-args-at-command - no command"
     (define-values (pre cmd post) (split-args-at-command '("-v" "--help")))
