@@ -93,7 +93,7 @@ dist-full: binary
 	@mkdir -p $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service
 	@cp playwright-service/package.json $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service/
 	@cp playwright-service/package-lock.json $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service/
-	@cp playwright-service/server.js $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service/
+	@cp playwright-service/server.js playwright-service/secure-session.js playwright-service/secure-session-cli.js $(DIST_DIR)/$(BINARY_NAME)-dist/lib/playwright-service/
 	@cd $(DIST_DIR) && tar -czvf $(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz $(BINARY_NAME)-dist
 	@echo "Full distribution created at $(DIST_DIR)/$(BINARY_NAME)-$(shell uname -s)-$(shell uname -m).tar.gz"
 	@echo ""

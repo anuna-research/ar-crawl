@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "test:secure": "node --test tests/secure-session.test.js tests/secure-cli.test.js",
     "postinstall": "npx playwright install chromium"
   },
   "dependencies": {

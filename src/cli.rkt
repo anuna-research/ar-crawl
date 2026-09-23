@@ -2982,6 +2982,17 @@ Command-line interface for the web crawler for agents with service fallbacks.
    #:args ()
    (void)))
 
+(define secure-session-profile (make-parameter #f))
+
+;; Run the secure driver directly: no shared HTTP browser service, no recording.
+(define (cmd-secure-session profile)
+  (define node (find-executable-path "node"))
+  (define driver (build-path (get-playwright-service-dir) "secure-session-cli.js"))
+  (unless (and node (file-exists? driver))
+    (eprintf "Secure session driver unavailable; install the current playwright-service files and Node 22.13+.\n")
+    (exit EXIT-ERROR))
+  (exit (system*/exit-code node driver (path->complete-path profile))))
+
 ;; @function{parse-session-args}
 ;; @description{Parse session command arguments}
 (define (parse-session-args args)
@@ -2991,6 +3002,8 @@ Command-line interface for the web crawler for agents with service fallbacks.
    #:once-each
    [("-v" "--verbose") "Enable verbose output"
     (verbose-mode #t)]
+   [("--secure-profile") profile "Private JSON profile for a credential-safe, non-recording session"
+    (secure-session-profile profile)]
    #:args ()
    (void)))
 
@@ -3330,8 +3343,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
        [(session)
         (parse-session-args post-cmd-args)
-        (with-playwright-cleanup
-          (cmd-session #:verbose (verbose-mode)))]
+        (if (secure-session-profile)
+            (cmd-secure-session (secure-session-profile))
+            (with-playwright-cleanup
+              (cmd-session #:verbose (verbose-mode))))]
 
        [(android)
         (when (empty? post-cmd-args)
@@ -4195,7 +4210,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  ar-crawl session [options]~n~n")
 
   (printf "OPTIONS~n")
-  (printf "  -v, --verbose       Show debug output~n~n")
+  (printf "  -v, --verbose       Show debug output~n")
+  (printf "  --secure-profile FILE  Private credential profile; isolated browser, no recording~n")
+  (printf "                         See docs/secure-sessions.md for login and restrictions.~n~n")
 
   (printf "COMMANDS (stdin)~n")
   (printf "  {\"type\": \"...\", ...}   Execute Playwright action (JSON)~n")

@@ -1500,3 +1500,12 @@ For support and questions:
 ---
 
 **AR-Crawl** - Agent-first web crawler designed as a tool for LLM agents. Production-ready with service fallbacks. **AI is in your agent, not in your crawler.**
+
+### Credential-safe sessions
+
+For authenticated agent tasks, use
+`ar-crawl session --secure-profile /absolute/private/profile.json`.
+This opt-in mode loads named credentials from a private env file or a trusted
+local credential provider, restricts browser destinations, and disables secret
+exports and recording. See [secure sessions](docs/secure-sessions.md) for setup,
+commands, supported login forms and security boundaries.
