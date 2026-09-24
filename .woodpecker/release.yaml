@@ -53,7 +53,7 @@ steps:
       - echo "Bundling playwright-service..."
       - mkdir -p dist/ar-crawl-dist/lib/playwright-service
       - cp playwright-service/package.json dist/ar-crawl-dist/lib/playwright-service/
-      - cp playwright-service/server.js dist/ar-crawl-dist/lib/playwright-service/
+      - cp playwright-service/server.js playwright-service/secure-session.js playwright-service/secure-session-cli.js dist/ar-crawl-dist/lib/playwright-service/
 
       # Create the archive
       - cd dist && tar -czvf ar-crawl-linux-$(uname -m).tar.gz ar-crawl-dist && cd ..
@@ -100,7 +100,7 @@ steps:
                   # Bundle playwright-service
                   mkdir -p dist/ar-crawl-intel-dist/lib/playwright-service
                   cp playwright-service/package.json dist/ar-crawl-intel-dist/lib/playwright-service/
-                  cp playwright-service/server.js dist/ar-crawl-intel-dist/lib/playwright-service/
+                  cp playwright-service/server.js playwright-service/secure-session.js playwright-service/secure-session-cli.js dist/ar-crawl-intel-dist/lib/playwright-service/
 
                   # Create archive
                   cd dist && tar -czvf ar-crawl-macos-x86_64.tar.gz ar-crawl-intel-dist && cd $ORIGINAL_DIR
@@ -159,7 +159,7 @@ steps:
                     # Bundle playwright-service
                     mkdir -p dist/ar-crawl-arm-dist/lib/playwright-service
                     cp $ORIGINAL_DIR/playwright-service/package.json dist/ar-crawl-arm-dist/lib/playwright-service/
-                    cp $ORIGINAL_DIR/playwright-service/server.js dist/ar-crawl-arm-dist/lib/playwright-service/
+                    cp $ORIGINAL_DIR/playwright-service/server.js $ORIGINAL_DIR/playwright-service/secure-session.js $ORIGINAL_DIR/playwright-service/secure-session-cli.js dist/ar-crawl-arm-dist/lib/playwright-service/
 
                     # IMPORTANT: Directly create tar in the original directory
                     cd dist

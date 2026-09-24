@@ -59,6 +59,7 @@ raco distribute "$BUILD_DIR/$DIST_DIR_NAME" "$BUILD_DIR/ar-crawl-arm"
 info "Bundling playwright-service..."
 mkdir -p "$BUILD_DIR/$DIST_DIR_NAME/lib/playwright-service"
 cp playwright-service/package.json playwright-service/server.js \
+  playwright-service/secure-session.js playwright-service/secure-session-cli.js \
   "$BUILD_DIR/$DIST_DIR_NAME/lib/playwright-service/"
 
 # Sanity check: the binary must report the version we are releasing
