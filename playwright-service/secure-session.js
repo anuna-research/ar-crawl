@@ -8,17 +8,87 @@ function privateFile(path){
  try{const st=fstatSync(fd);if(!st.isFile()||st.size>65536||(st.mode&0o077)||st.uid!==process.getuid())throw Error('Private file must be owned by the current user with mode 0600');return readFileSync(fd,'utf8');}finally{closeSync(fd);}
 }
 function httpsURL(value){const url=new URL(value);if(url.protocol!=='https:'||url.username||url.password||url.hash)throw Error('Use HTTPS without URL credentials or fragments');return url;}
+// A small vocabulary, independent of provider IDs and website selectors.
+const fieldSchema={
+ 'payment.card.number':{autocomplete:'cc-number',labels:['card number','credit card number','debit card number']},
+ 'payment.card.name':{autocomplete:'cc-name',labels:['name on card','cardholder name','card holder name']},
+ 'payment.card.expiry':{autocomplete:'cc-exp',labels:['expiry','expiry date','expiration date','card expiry']},
+ 'payment.card.expiryMonth':{autocomplete:'cc-exp-month',labels:['expiry month','expiration month']},
+ 'payment.card.expiryYear':{autocomplete:'cc-exp-year',labels:['expiry year','expiration year']},
+ 'payment.card.securityCode':{autocomplete:'cc-csc',labels:['cvv','cvc','security code','card security code']},
+ 'person.name':{autocomplete:'name',labels:['full name']},
+ 'person.givenName':{autocomplete:'given-name',labels:['first name','given name']},
+ 'person.familyName':{autocomplete:'family-name',labels:['last name','family name','surname']},
+ 'person.email':{autocomplete:'email',labels:['email','email address']},
+ 'person.phone':{autocomplete:'tel',labels:['phone','phone number','telephone']},
+ 'person.address.street':{autocomplete:'street-address',labels:['street address']},
+ 'person.address.line1':{autocomplete:'address-line1',labels:['address line 1','address 1']},
+ 'person.address.line2':{autocomplete:'address-line2',labels:['address line 2','address 2']},
+ 'person.address.city':{autocomplete:'address-level2',labels:['city','town']},
+ 'person.address.region':{autocomplete:'address-level1',labels:['state','province','region']},
+ 'person.address.postalCode':{autocomplete:'postal-code',labels:['postal code','postcode','zip code']},
+ 'person.address.country':{autocomplete:'country-name',labels:['country']},
+ 'account.username':{autocomplete:'username',labels:['username','user name','email','email address']},
+ 'account.password':{autocomplete:'current-password',labels:['password']}
+};
+async function matchField(page,field){
+ if(field.selector){
+  const locator=page.locator(field.selector);
+  if(await locator.count()!==1)return null;
+  return locator.elementHandle();
+ }
+ // Resolve to an element handle, not an index selector that can silently retarget
+ // after the provider returns. No input values leave the browser during discovery.
+ const handle=await page.evaluateHandle(({definition,semanticType,context})=>{
+  const normalize=value=>(value||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const matches=[...document.querySelectorAll('input,textarea')].filter(el=>{
+   if(!el.getClientRects().length||getComputedStyle(el).visibility!=='visible'||el.disabled||el.readOnly)return false;
+   if(el.tagName==='INPUT'&&!['text','email','tel','password','number','search','url'].includes(el.type))return false;
+   if((semanticType==='account.password')!==(el.type==='password'))return false;
+   const tokens=(el.getAttribute('autocomplete')||'').toLowerCase().trim().split(/\s+/);
+   if(context&&!tokens.includes(context))return false;
+   const detail=tokens.filter(t=>t&&!['on','off','billing','shipping','home','work','mobile','fax','pager','webauthn'].includes(t)&&!t.startsWith('section-'));
+   if(detail.length)return detail.length===1&&detail[0]===definition.autocomplete;
+   const labelledBy=(el.getAttribute('aria-labelledby')||'').split(/\s+/).map(id=>document.getElementById(id)?.textContent||'').join(' ');
+   const labels=[...(el.labels||[])].map(label=>label.textContent);
+   const names=[...labels,el.getAttribute('aria-label'),labelledBy,el.getAttribute('placeholder'),el.name,el.id].map(normalize);
+   return names.some(name=>definition.labels.includes(name));
+  });
+  return matches.length===1?matches[0]:null;
+ },{definition:fieldSchema[field.semanticType],semanticType:field.semanticType,context:field.context});
+ const element=handle.asElement();if(!element)await handle.dispose();return element;
+}
 function validateProfile(profile){
  if(!profile||!Array.isArray(profile.connections)||!profile.connections.length||profile.connections.length>10)throw Error('Profile needs one to ten connections');
  const ids=new Set();
  for(const c of profile.connections){
   if(typeof c.id!=='string'||!/^[-\w]{1,100}$/.test(c.id)||ids.has(c.id))throw Error('Invalid connection identity');ids.add(c.id);
   if(typeof c.name!=='string'||c.name.length>150)throw Error('Invalid connection name');
-  for(const key of ['usernameSelector','passwordSelector','submitSelector','successSelector'])if(typeof c[key]!=='string'||!c[key]||c[key].length>500)throw Error('Missing login selector');
+  for(const key of ['submitSelector','successSelector'])if(typeof c[key]!=='string'||!c[key]||c[key].length>500)throw Error('Missing login selector');
+  for(const key of ['usernameSelector','passwordSelector'])if(c[key]!==undefined&&(typeof c[key]!=='string'||!c[key]||c[key].length>500))throw Error('Invalid login selector');
   if(typeof c.loginUrl!=='string'||c.loginUrl.length>2000)throw Error('Invalid login URL');
   c.origin=httpsURL(c.loginUrl).origin;
   if(!Array.isArray(c.resourceOrigins||[])||(c.resourceOrigins||[]).length>20)throw Error('Invalid resource origins');
   c.resourceOrigins=(c.resourceOrigins||[]).map(value=>{const u=httpsURL(value);if(u.pathname!=='/'||u.search)throw Error('Use exact resource origins');return u.origin;});
+  if(!Array.isArray(c.sensitiveFields||[])||(c.sensitiveFields||[]).length>50)throw Error('Invalid sensitive fields');
+  const fieldIds=new Set();
+  for(const field of c.sensitiveFields||[]){
+   if(!field||typeof field.id!=='string'||!/^[-\w]{1,100}$/.test(field.id)||fieldIds.has(field.id))throw Error('Invalid sensitive field identity');
+   fieldIds.add(field.id);
+   if(typeof field.url!=='string'||field.url.length>2000||httpsURL(field.url).origin!==c.origin)throw Error('Sensitive field must target a saved same-origin HTTPS page');
+   if(field.selector!==undefined&&(typeof field.selector!=='string'||!field.selector||field.selector.length>500))throw Error('Invalid sensitive selector');
+   if(field.semanticType!==undefined&&!Object.hasOwn(fieldSchema,field.semanticType))throw Error('Unknown semantic field type');
+   if(!field.selector&&!field.semanticType)throw Error('Supply a semantic type or selector');
+   if(field.context!==undefined&&!['billing','shipping'].includes(field.context))throw Error('Invalid field context');
+   const source=field.source;
+   if(!source||!['env-file','broker'].includes(source.type))throw Error('Invalid sensitive field source');
+   if(source.type==='env-file'){
+    if(typeof source.path!=='string'||!source.path.startsWith('/')||typeof source.key!=='string'||!/^[A-Za-z_][\w]*$/.test(source.key))throw Error('Invalid sensitive env-file source');
+   }else{
+    const u=new URL(source.url);
+    if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||u.username||u.password||u.hash||typeof source.token!=='string'||source.token.length<32)throw Error('Sensitive broker must use authenticated IPv4 loopback');
+   }
+  }
   const source=c.credential;
   if(!source||!['env-file','broker'].includes(source.type))throw Error('Choose an env-file or broker credential source');
   if(source.type==='env-file'){
@@ -43,10 +113,23 @@ async function resolveCredential(c){
  for(const key of ['username','password'])if(typeof result[key]!=='string'||!result[key]||result[key].length>4000)throw Error('Credential unavailable');
  return result;
 }
+async function resolveSensitiveField(connection,field){
+ const source=field.source;let value;
+ if(source.type==='env-file'){
+  if(typeof parseEnv!=='function')throw Error('Secure env files require Node 22.13 or later');
+  value=parseEnv(privateFile(source.path))[source.key];
+ }else{
+  const response=await fetch(source.url,{method:'POST',headers:{Authorization:'Bearer '+source.token,'Content-Type':'application/json'},body:JSON.stringify({id:connection.id,fieldId:field.id}),redirect:'error',signal:AbortSignal.timeout(15000)});
+  if(!response.ok)throw Error('Sensitive value unavailable');
+  const body=await response.text();if(body.length>16384)throw Error('Sensitive response too large');value=JSON.parse(body).value;
+ }
+ if(typeof value!=='string'||!value||value.length>4000)throw Error('Sensitive value unavailable');
+ return value;
+}
 const safeKeys=new Set(['Enter','Tab','Escape','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Home','End','PageDown','PageUp']);
 class SecureSession {
- constructor(profile,{launch=()=>chromium.launch({headless:true,args:['--disable-extensions','--force-webrtc-ip-handling-policy=disable_non_proxied_udp']}) ,credentials=resolveCredential}={}){
-  this.profile=validateProfile(profile);this.launch=launch;this.credentials=credentials;this.secrets=[];
+ constructor(profile,{launch=()=>chromium.launch({headless:true,args:['--disable-extensions','--force-webrtc-ip-handling-policy=disable_non_proxied_udp']}) ,credentials=resolveCredential,sensitiveFields=resolveSensitiveField}={}){
+  this.profile=validateProfile(profile);this.launch=launch;this.credentials=credentials;this.sensitiveFields=sensitiveFields;this.secrets=[];this.sensitiveMode=false;
  }
  redact(value){
   if(typeof value==='string'){
@@ -59,7 +142,7 @@ class SecureSession {
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,this.redact(v)]));
   return value;
  }
- async closePage(){await this.context?.close();this.context=null;this.page=null;this.connection=null;}
+ async closePage(){await this.context?.close();this.context=null;this.page=null;this.connection=null;this.sensitiveMode=false;}
  async close(){try{await this.closePage();}finally{await this.browser?.close();this.browser=null;this.secrets=[];}}
  allowed(value,resource=false){try{const u=httpsURL(value);return u.origin===this.connection.origin||resource&&this.connection.resourceOrigins.includes(u.origin);}catch{return false;}}
  async open(c){
@@ -110,16 +193,15 @@ class SecureSession {
   const c=this.profile.connections.find(c=>c.id===id);if(!c)throw Error('Connection not granted to this session');
   try{
    await this.open(c);
-   const user=this.page.locator(c.usernameSelector),password=this.page.locator(c.passwordSelector),submit=this.page.locator(c.submitSelector),success=this.page.locator(c.successSelector);
-   await user.waitFor({state:'visible'});await password.waitFor({state:'visible'});
-   if(await user.count()!==1||await password.count()!==1||await submit.count()!==1||await success.isVisible())throw Error('Ambiguous login fields or success marker');
+   const user=await matchField(this.page,{selector:c.usernameSelector,semanticType:'account.username'}),password=await matchField(this.page,{selector:c.passwordSelector,semanticType:'account.password'}),submit=this.page.locator(c.submitSelector),success=this.page.locator(c.successSelector);
+   if(!user||!password||!await user.isVisible()||!await password.isVisible()||await submit.count()!==1||await success.isVisible())throw Error('Ambiguous login fields or success marker');
    const check=async(locator,isPassword)=>locator.evaluate((el,{origin,isPassword})=>{
     if(!(el instanceof HTMLInputElement)||el.disabled||el.readOnly||isPassword&&el.type!=='password'||!isPassword&&!['email','text','tel'].includes(el.type)||location.origin!==origin)return false;
     return !el.form||(new URL(el.form.action||location.href).origin===origin&&el.form.method.toLowerCase()==='post');
    },{origin:c.origin,isPassword});
    if(!await check(user,false)||!await check(password,true))throw Error('Login fields must use a same-origin POST form');
    const secret=await this.credentials(c);this.secrets.push(secret.username,secret.password);
-   if(!this.allowed(this.page.url()))throw Error('Login origin changed');
+   if(!this.allowed(this.page.url())||!await check(user,false)||!await check(password,true))throw Error('Login origin changed');
    await user.fill(secret.username);if(!this.allowed(this.page.url())||!await check(password,true))throw Error('Login origin changed');await password.fill(secret.password);
    if(!this.allowed(this.page.url()))throw Error('Login origin changed');
    await submit.click();
@@ -128,8 +210,46 @@ class SecureSession {
    return {success:true,authenticated:true,connectionId:id};
   }catch{await this.closePage();throw Error('Login failed. Check the permitted origin, same-origin POST form, saved selectors and credential access.');}
  }
+ async discoverFields(){
+  if(this.sensitiveMode)throw Error('Discovery is unavailable after sensitive filling');
+  const fields=[];
+  for(const field of this.connection.sensitiveFields||[]){
+   let element=null;
+   try{
+    if(this.page.url()===new URL(field.url).href)element=await matchField(this.page,field);
+    fields.push({fieldId:field.id,semanticType:field.semanticType||null,status:element?'matched':'needs-configuration'});
+   }finally{await element?.dispose();}
+  }
+  return {fields,authorizedToRelease:false};
+ }
+ async fillSecret(fieldId){
+  const field=this.connection?.sensitiveFields?.find(field=>field.id===fieldId);
+  if(!field)throw Error('Sensitive field is not granted');
+  try{
+   const locator=await matchField(this.page,field);
+   const check=async()=>!!locator&&this.page.url()===new URL(field.url).href&&await locator.isVisible()&&await locator.evaluate((el,origin)=>{
+    if(!el.isConnected||location.origin!==origin||!(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement)||el.disabled||el.readOnly)return false;
+    if(el instanceof HTMLInputElement&&!['text','email','tel','password','number','search','url'].includes(el.type))return false;
+    return !el.form||(new URL(el.form.action||location.href).origin===origin&&el.form.method.toLowerCase()==='post');
+   },this.connection.origin);
+   if(!await check())throw Error();
+   const value=await this.sensitiveFields(this.connection,field);
+   if(typeof value!=='string'||!value||value.length>4000)throw Error();
+   this.secrets.push(value);
+   const matched=await matchField(this.page,field);
+   const unchanged=matched&&await locator.evaluate((el,other)=>el===other,matched);
+   await matched?.dispose();
+   if(!unchanged||!await check())throw Error();
+   // Stop DOM output before dispatching input events: sites may echo or format
+   // values in ways that exact-string redaction cannot reliably recognize.
+   this.sensitiveMode=true;
+   await locator.fill(value);
+   return {success:true,filled:true,submissionAllowed:false};
+  }catch{await this.closePage();throw Error('Sensitive fill failed; the page was closed');}
+ }
  async state(view='minimal'){
   if(!this.page||!this.allowed(this.page.url()))throw Error('Log in before using the website session');
+  if(this.sensitiveMode)return {sensitiveFieldsFilled:true,submissionAllowed:false,message:'Page output is withheld after sensitive filling. Fill another granted field or close the session.'};
   const state={url:new URL(this.page.url()).origin+new URL(this.page.url()).pathname,title:await this.page.title()};
   if(view==='full')state.text=(await this.page.locator('body').innerText()).slice(0,24000);
   if(['full','actions','forms'].includes(view))state.elements=await this.page.evaluate(view=>[...document.querySelectorAll(view==='forms'?'input,textarea,select':'a,button,input,textarea,select,[role="button"]')].filter(el=>el.getClientRects().length).slice(0,100).map(el=>({tag:el.tagName.toLowerCase(),type:el.type||null,label:el.getAttribute('aria-label')||el.getAttribute('placeholder')||(el.matches('a,button')?el.textContent?.slice(0,150):el.name)||null,selector:el.id?'#'+CSS.escape(el.id):el.name?'[name='+JSON.stringify(el.name)+']':null})),view);
@@ -138,11 +258,14 @@ class SecureSession {
  async command(line){
   if(typeof line!=='string'||line.length>16000||/[\r\n]/.test(line))throw Error('Provide one bounded session command');
   if(line==='exit'){await this.close();return {closed:true};}
-  if(line==='help')return {mode:'secure',commands:['login','state','state --full','state --actions','state --forms','goto','click','fill','selectOption','check','uncheck','press','scroll','waitForSelector','exit'],recording:false};
+  if(line==='help')return {mode:'secure',commands:['login','discoverFields','fillSecret','state','state --full','state --actions','state --forms','goto','click','fill','selectOption','check','uncheck','press','scroll','waitForSelector','exit'],recording:false};
   if(['state','state --full','state --actions','state --forms'].includes(line))return this.state(line.split('--')[1]||'minimal');
   let a;try{a=JSON.parse(line);}catch{throw Error('Unsupported secure-session command');}
   if(a.type==='login')return this.login(a.connectionId);
   if(!this.page||!this.allowed(this.page.url()))throw Error('Log in before using the website session');
+  if(a.type==='discoverFields')return this.discoverFields();
+  if(a.type==='fillSecret'){if(Object.keys(a).some(key=>!['type','fieldId'].includes(key)))throw Error('Use only a granted field ID');return this.fillSecret(a.fieldId);}
+  if(this.sensitiveMode)throw Error('Only further sensitive fills, state, a fresh login or exit are permitted after sensitive filling');
   const selector=()=>{if(typeof a.selector!=='string'||!a.selector||a.selector.length>500)throw Error('Invalid selector');return this.page.locator(a.selector);};
   try{
    switch(a.type){
@@ -161,4 +284,4 @@ class SecureSession {
   }catch{throw Error('Website action failed or is not permitted in a secure session');}
  }
 }
-module.exports={SecureSession,validateProfile,privateFile,resolveCredential};
+module.exports={SecureSession,validateProfile,privateFile,resolveCredential,resolveSensitiveField,fieldSchema};
