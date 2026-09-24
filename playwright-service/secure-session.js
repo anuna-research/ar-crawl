@@ -48,7 +48,7 @@ async function matchField(page,field){
    const tokens=(el.getAttribute('autocomplete')||'').toLowerCase().trim().split(/\s+/);
    if(context&&!tokens.includes(context))return false;
    const detail=tokens.filter(t=>t&&!['on','off','billing','shipping','home','work','mobile','fax','pager','webauthn'].includes(t)&&!t.startsWith('section-'));
-   if(detail.length)return detail.length===1&&detail[0]===definition.autocomplete;
+   if(detail.length)return detail.length===1&&(detail[0]===definition.autocomplete||semanticType==='account.username'&&detail[0]==='email');
    const labelledBy=(el.getAttribute('aria-labelledby')||'').split(/\s+/).map(id=>document.getElementById(id)?.textContent||'').join(' ');
    const labels=[...(el.labels||[])].map(label=>label.textContent);
    const names=[...labels,el.getAttribute('aria-label'),labelledBy,el.getAttribute('placeholder'),el.name,el.id].map(normalize);
@@ -58,16 +58,38 @@ async function matchField(page,field){
  },{definition:fieldSchema[field.semanticType],semanticType:field.semanticType,context:field.context});
  const element=handle.asElement();if(!element)await handle.dispose();return element;
 }
+function hasAuthenticatedMarker({origin,checkChallenge=true}){
+ if(location.origin!==origin)return false;
+ const visible=el=>el.getClientRects().length&&getComputedStyle(el).visibility==='visible';
+ if(checkChallenge&&[...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code],input[name*=otp i],iframe[src*=captcha i]')].some(visible))return false;
+ return [...document.querySelectorAll('a,button,input[type=submit]')].some(el=>{
+  if(!visible(el)||el.disabled)return false;
+  const text=(el.getAttribute('aria-label')||el.textContent||el.value||'').trim().toLowerCase().replace(/\s+/g,' ');
+  if(!['log out','logout','sign out','signout'].includes(text))return false;
+  const target=el.getAttribute('href')||el.getAttribute('formaction')||el.form?.action;
+  if(!target)return el.tagName==='BUTTON';
+  try{const url=new URL(target,location.href);return url.origin===origin&&/(?:^|\/)(?:logout|signout|sign-out|log-out)(?:\/|$)/i.test(url.pathname);}catch{return false;}
+ });
+}
+async function loginSubmit(page,user,password,selector){
+ if(selector){const found=page.locator(selector);return await found.count()===1?found.elementHandle():null;}
+ const handle=await page.evaluateHandle(({user,password})=>{
+  if(!user.form||user.form!==password.form)return null;
+  const buttons=[...user.form.elements].filter(el=>['BUTTON','INPUT'].includes(el.tagName)&&el.type==='submit'&&!el.disabled&&el.getClientRects().length&&getComputedStyle(el).visibility==='visible');
+  return buttons.length===1?buttons[0]:null;
+ },{user,password});
+ const element=handle.asElement();if(!element)await handle.dispose();return element;
+}
 function validateProfile(profile){
  if(!profile||!Array.isArray(profile.connections)||!profile.connections.length||profile.connections.length>10)throw Error('Profile needs one to ten connections');
  const ids=new Set();
  for(const c of profile.connections){
   if(typeof c.id!=='string'||!/^[-\w]{1,100}$/.test(c.id)||ids.has(c.id))throw Error('Invalid connection identity');ids.add(c.id);
   if(typeof c.name!=='string'||c.name.length>150)throw Error('Invalid connection name');
-  for(const key of ['submitSelector','successSelector'])if(typeof c[key]!=='string'||!c[key]||c[key].length>500)throw Error('Missing login selector');
-  for(const key of ['usernameSelector','passwordSelector'])if(c[key]!==undefined&&(typeof c[key]!=='string'||!c[key]||c[key].length>500))throw Error('Invalid login selector');
+  for(const key of ['usernameSelector','passwordSelector','submitSelector','successSelector'])if(c[key]!==undefined&&(typeof c[key]!=='string'||!c[key]||c[key].length>500))throw Error('Invalid login selector');
   if(typeof c.loginUrl!=='string'||c.loginUrl.length>2000)throw Error('Invalid login URL');
   c.origin=httpsURL(c.loginUrl).origin;
+  if(c.recaptcha!==undefined&&typeof c.recaptcha!=='boolean')throw Error('Invalid reCAPTCHA permission');
   if(!Array.isArray(c.resourceOrigins||[])||(c.resourceOrigins||[]).length>20)throw Error('Invalid resource origins');
   c.resourceOrigins=(c.resourceOrigins||[]).map(value=>{const u=httpsURL(value);if(u.pathname!=='/'||u.search)throw Error('Use exact resource origins');return u.origin;});
   if(!Array.isArray(c.sensitiveFields||[])||(c.sensitiveFields||[]).length>50)throw Error('Invalid sensitive fields');
@@ -145,6 +167,19 @@ class SecureSession {
  async closePage(){await this.context?.close();this.context=null;this.page=null;this.connection=null;this.sensitiveMode=false;}
  async close(){try{await this.closePage();}finally{await this.browser?.close();this.browser=null;this.secrets=[];}}
  allowed(value,resource=false){try{const u=httpsURL(value);return u.origin===this.connection.origin||resource&&this.connection.resourceOrigins.includes(u.origin);}catch{return false;}}
+ requestAllowed(request,value=request.url()){
+  try{
+   const url=httpsURL(value),method=request.method(),type=request.resourceType();
+   if(url.origin===this.connection.origin)return true;
+   if(method==='GET'&&['script','stylesheet','image','font','media'].includes(type)&&this.connection.resourceOrigins.includes(url.origin))return true;
+   if(!this.connection.recaptcha||url.port||!url.pathname.startsWith('/recaptcha/'))return false;
+   if(url.hostname==='www.gstatic.com')return method==='GET'&&['script','stylesheet','image','font'].includes(type);
+   if(!['www.google.com','recaptcha.google.com','www.recaptcha.net'].includes(url.hostname))return false;
+   if(type==='document')return method==='GET'&&request.frame()!==this.page.mainFrame();
+   if(['xhr','fetch'].includes(type))return ['GET','POST','OPTIONS'].includes(method);
+   return method==='GET'&&['script','stylesheet','image','font'].includes(type);
+  }catch{return false;}
+ }
  async open(c){
   await this.closePage();this.connection=c;this.browser||=await this.launch();
   this.context=await this.browser.newContext({acceptDownloads:false,serviceWorkers:'block'});
@@ -153,11 +188,11 @@ class SecureSession {
   await this.context.routeWebSocket('**/*',ws=>ws.close());
   await this.context.route('**/*',async route=>{
    const request=route.request();
-   // Block external frames/navigation and cross-origin submissions. Allow
-   // explicitly trusted static resource hosts, never credentials in URL/query.
-   const same=this.allowed(request.url()),staticResource=['script','stylesheet','image','font','media'].includes(request.resourceType());
-   const allowed=same||request.method()==='GET'&&staticResource&&this.allowed(request.url(),true);
-   if(!allowed||this.secrets.some(s=>request.url().includes(s)||request.url().includes(encodeURIComponent(s))))return route.abort();
+   // Optional provider access is limited by host, path, method and resource
+   // type. Top-level navigation and secret fills stay on the website origin.
+   const external=!this.allowed(request.url());
+   const body=external?(request.postData()||''):'';
+   if(!this.requestAllowed(request)||this.secrets.some(s=>request.url().includes(s)||request.url().includes(encodeURIComponent(s))||body.includes(s)||body.includes(encodeURIComponent(s))))return route.abort();
    try{
     // route.continue() can follow redirects without invoking the route handler
     // again. Fetch each hop ourselves with automatic redirects disabled.
@@ -167,7 +202,7 @@ class SecureSession {
      const status=response.status(),location=response.headers().location;
      if([301,302,303,307,308].includes(status)&&location){
       const next=new URL(location,target);
-      if(next.origin!==new URL(request.url()).origin||!this.allowed(next.href,!request.isNavigationRequest())||this.secrets.some(s=>next.href.includes(s)||next.href.includes(encodeURIComponent(s))))return route.abort();
+      if(next.origin!==new URL(request.url()).origin||!this.requestAllowed(request,next.href)||this.secrets.some(s=>next.href.includes(s)||next.href.includes(encodeURIComponent(s))))return route.abort();
       if(request.isNavigationRequest()){
        // Convert ordinary navigation redirects into fresh navigations so the
        // browser URL stays correct and every hop re-enters this policy.
@@ -193,20 +228,30 @@ class SecureSession {
   const c=this.profile.connections.find(c=>c.id===id);if(!c)throw Error('Connection not granted to this session');
   try{
    await this.open(c);
-   const user=await matchField(this.page,{selector:c.usernameSelector,semanticType:'account.username'}),password=await matchField(this.page,{selector:c.passwordSelector,semanticType:'account.password'}),submit=this.page.locator(c.submitSelector),success=this.page.locator(c.successSelector);
-   if(!user||!password||!await user.isVisible()||!await password.isVisible()||await submit.count()!==1||await success.isVisible())throw Error('Ambiguous login fields or success marker');
+   const user=await matchField(this.page,{selector:c.usernameSelector,semanticType:'account.username'}),password=await matchField(this.page,{selector:c.passwordSelector,semanticType:'account.password'});
+   if(!user||!password)throw Error('Login fields not found');
+   const submit=await loginSubmit(this.page,user,password,c.submitSelector),success=c.successSelector?this.page.locator(c.successSelector):null;
+   const alreadyAuthenticated=success?await success.isVisible():await this.page.evaluate(hasAuthenticatedMarker,{origin:c.origin,checkChallenge:false});
+   if(!user||!password||!await user.isVisible()||!await password.isVisible()||!submit||!await submit.isVisible()||alreadyAuthenticated)throw Error('Ambiguous login fields or success marker');
    const check=async(locator,isPassword)=>locator.evaluate((el,{origin,isPassword})=>{
-    if(!(el instanceof HTMLInputElement)||el.disabled||el.readOnly||isPassword&&el.type!=='password'||!isPassword&&!['email','text','tel'].includes(el.type)||location.origin!==origin)return false;
+    if(!el.isConnected||!(el instanceof HTMLInputElement)||el.disabled||el.readOnly||isPassword&&el.type!=='password'||!isPassword&&!['email','text','tel'].includes(el.type)||location.origin!==origin)return false;
     return !el.form||(new URL(el.form.action||location.href).origin===origin&&el.form.method.toLowerCase()==='post');
    },{origin:c.origin,isPassword});
-   if(!await check(user,false)||!await check(password,true))throw Error('Login fields must use a same-origin POST form');
+   const checkSubmit=async()=>submit.evaluate((el,{origin,user,password})=>{
+    if(!el.isConnected||el.disabled||location.origin!==origin)return false;
+    if(user.form!==password.form||el.form!==password.form)return false;
+    const action=el.getAttribute('formaction')||el.form?.action;
+    const method=el.getAttribute('formmethod')||el.form?.method;
+    return !el.form||new URL(action,location.href).origin===origin&&method?.toLowerCase()==='post';
+   },{origin:c.origin,user,password});
+   if(!await check(user,false)||!await check(password,true)||!await checkSubmit())throw Error('Login fields must use a same-origin POST form');
    const secret=await this.credentials(c);this.secrets.push(secret.username,secret.password);
-   if(!this.allowed(this.page.url())||!await check(user,false)||!await check(password,true))throw Error('Login origin changed');
+   if(!this.allowed(this.page.url())||!await check(user,false)||!await check(password,true)||!await checkSubmit())throw Error('Login origin changed');
    await user.fill(secret.username);if(!this.allowed(this.page.url())||!await check(password,true))throw Error('Login origin changed');await password.fill(secret.password);
-   if(!this.allowed(this.page.url()))throw Error('Login origin changed');
+   if(!this.allowed(this.page.url())||!await checkSubmit())throw Error('Login origin changed');
    await submit.click();
-   try{await success.waitFor({state:'visible',timeout:15000});if(!this.allowed(this.page.url())||await password.isVisible())throw Error('Unconfirmed login');}
-   catch{await this.closePage();return {success:false,needsUser:true,message:'Login could not be confirmed. Check the saved selectors and credentials. MFA or CAPTCHA may require manual sign-in; this session was closed.'};}
+   try{if(success)await success.waitFor({state:'visible',timeout:15000});else await this.page.waitForFunction(hasAuthenticatedMarker,{origin:c.origin},{timeout:15000});if(!this.allowed(this.page.url())||await this.page.locator('input[type=password]:visible').count())throw Error('Unconfirmed login');}
+   catch{await this.closePage();return {success:false,needsUser:true,message:'Login could not be confirmed. Check credentials or use Advanced settings to identify the login controls and success marker. MFA or CAPTCHA may require manual sign-in; this session was closed.'};}
    return {success:true,authenticated:true,connectionId:id};
   }catch{await this.closePage();throw Error('Login failed. Check the permitted origin, same-origin POST form, saved selectors and credential access.');}
  }

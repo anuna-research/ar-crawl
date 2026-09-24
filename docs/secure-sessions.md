@@ -53,8 +53,8 @@ exit
 
 Login navigates to the saved HTTPS URL, verifies the exact origin and unique
 visible input fields, retrieves credentials, fills and submits the saved form,
-and checks the configured success marker. Standard forms must use same-origin
-POST. The success marker must be absent before login and visible afterwards,
+and checks the configured or automatically detected success marker. Standard
+forms must use same-origin POST. The marker must be absent before login and visible afterwards,
 with the password field no longer visible. A failed/unconfirmed login closes
 the page and reports failure; it never asserts success from a click alone.
 This version supports single-page forms. MFA, CAPTCHA, multi-page login and
@@ -71,7 +71,8 @@ raw HTML, screenshots, clipboard shortcuts, downloads, cookie export, commit,
 recording, tracing or arbitrary file writes are exposed.
 
 Network policy is enforced in the browser driver, including redirect hops.
-Navigation, forms and API requests remain on the login origin. Additional
+Top-level navigation and credential form submissions remain on the login origin.
+API requests also remain there unless the reCAPTCHA permission below is enabled. Additional
 `resourceOrigins` allow only GET static resources (scripts, styles, images,
 fonts and media). Redirects cannot change the original request's origin;
 POST-preserving navigation redirects (307/308) are rejected. Ordinary navigation
@@ -233,8 +234,36 @@ implemented. The driver retains the selected DOM element and rechecks both its
 identity and the mapping after the provider returns, rejecting replaced controls,
 new ambiguity or changed semantic hints.
 
-Login profiles may now omit `usernameSelector` and `passwordSelector` to use
-`account.username` and `account.password` discovery. The saved `submitSelector`
-and `successSelector` remain required so a guessed button or page change cannot
-establish successful authentication. Naninunu's UI has not yet been updated to
-make its selector inputs optional.
+Login profiles can omit all four selectors. Username and password discovery use
+`account.username` and `account.password`; an email autocomplete hint also matches
+a login username. The submit control must be unique within their shared form.
+Submit overrides still undergo form-action and POST-method checks, including
+button-specific overrides. Automatic success detection requires a newly visible
+Log out/Sign out control, with no visible password, one-time-code input or CAPTCHA
+frame. A redirect or disappearing form alone is insufficient. This is a heuristic
+based on the destination page, not an independent authentication proof. Sites
+without these signals need an explicit `successSelector`. Missing or ambiguous
+controls fail before credential retrieval; unverified outcomes close the session.
+Naninunu's basic form needs only URL, username and password. Optional selectors,
+a display name and resource origins appear under Advanced.
+
+### Google reCAPTCHA dependencies
+
+A trusted connection can set `"recaptcha": true` to permit reCAPTCHA dependencies.
+The default is disabled. This is separate from `resourceOrigins` because
+verification also needs embedded documents and API requests.
+
+The grant permits HTTPS paths beginning `/recaptcha/` on `www.google.com`,
+`recaptcha.google.com` and `www.recaptcha.net`: GET scripts, styles, images and
+fonts; GET subframe documents; GET/POST/OPTIONS fetch and XHR requests.
+`www.gstatic.com/recaptcha/` permits GET static resources only. Non-default ports,
+other paths, other hosts, top-level provider navigation and cross-origin
+redirects remain blocked. Every redirect hop is checked against the same policy.
+External requests containing known secret strings in their URL or body are blocked.
+The driver still fills credentials only on the approved website origin.
+
+This allows Google's verification code to run and exchange browser verification
+data. It does not guarantee acceptance, solve visual challenges or expose frame
+screenshots to the agent. Sites requiring human interaction still report an
+unverified login. The host/path boundaries follow Google's
+[reCAPTCHA network guidance](https://developers.google.com/recaptcha/docs/faq).

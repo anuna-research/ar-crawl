@@ -149,3 +149,39 @@ test('semantic discovery maps fields without reading secrets and rejects ambigui
  assert.throws(()=>validateProfile({connections:[{...base,sensitiveFields:[{...field,semanticType:'unknown'}]}]}));
  assert.throws(()=>validateProfile({connections:[{...base,sensitiveFields:[{...field,context:'unknown'}]}]}));
 });
+
+test('automatic login requires a unique safe submit and a new authenticated marker',async t=>{
+ const dir=mkdtempSync(join(tmpdir(),'ar-auto-login-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem'),'-days','1','-subj','/CN=127.0.0.1'],{stdio:'ignore'});
+ let mode='ok',reads=0,submissions=0;
+ const server=https.createServer({key:readFileSync(join(dir,'key.pem')),cert:readFileSync(join(dir,'cert.pem'))},async(req,res)=>{
+  res.setHeader('Content-Type','text/html');
+  if(req.method==='POST'){
+   submissions++;for await(const chunk of req){};
+   return res.end(mode==='no-marker'?'<h1>Something happened</h1>':mode==='mfa'?'<input autocomplete=one-time-code><a href=/logout>Log out</a>':'<h1>Account</h1><a href=/logout>Log out</a>');
+  }
+  res.end(`<form method=post><input autocomplete=email><input type=password autocomplete=current-password><button ${mode==='get'?'formmethod=get':''} ${mode==='external'?'formaction=https://outside.example/':''}>Log in</button>${mode==='ambiguous'?'<button>Other submit</button>':''}</form>${mode==='already'?'<a href=/logout>Log out</a>':''}`);
+ });
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();return new Promise(r=>server.close(r));});
+ const browser=await chromium.launch({headless:true});t.after(()=>browser.close());
+ const {usernameSelector,passwordSelector,submitSelector,successSelector,...connection}=base;
+ const create=()=>new SecureSession({connections:[{...connection,loginUrl:'https://127.0.0.1:'+server.address().port+'/'}]},{launch:async()=>({newContext:options=>browser.newContext({...options,ignoreHTTPSErrors:true}),close:async()=>{}}),credentials:async()=>{reads++;return {username:'test-user',password:'test-password'};}});
+ for(mode of ['ok','ambiguous','get','external','already','no-marker','mfa']){
+  const session=create();t.after(()=>session.close());const before=reads,sent=submissions;
+  const open=session.open.bind(session);session.open=async c=>{await open(c);const wait=session.page.waitForFunction.bind(session.page);session.page.waitForFunction=(fn,arg,options)=>wait(fn,arg,{...options,timeout:500});};
+  if(['ambiguous','get','external','already'].includes(mode)){await assert.rejects(session.login('school'));assert.equal(reads,before);assert.equal(submissions,sent);}
+  else {const result=await session.login('school');assert.equal(Boolean(result.authenticated),mode==='ok');assert.equal(reads,before+1);if(mode!=='ok'){assert.equal(result.needsUser,true);assert.equal(session.page,null);}}
+  await session.close();
+ }
+});
+
+test('reCAPTCHA opt-in allows provider traffic without general external access',()=>{
+ const session=new SecureSession({connections:[{...base,recaptcha:true}]});session.connection=session.profile.connections[0];
+ const main={},child={};session.page={mainFrame:()=>main};
+ const request=(url,type='script',method='GET',frame=child)=>({url:()=>url,resourceType:()=>type,method:()=>method,frame:()=>frame});
+ for(const req of [request('https://www.google.com/recaptcha/api.js'),request('https://www.gstatic.com/recaptcha/releases/test.js'),request('https://www.google.com/recaptcha/api2/anchor','document'),request('https://www.google.com/recaptcha/api2/reload','xhr','POST'),request('https://www.recaptcha.net/recaptcha/api.js')])assert.equal(session.requestAllowed(req),true);
+ for(const req of [request('https://www.google.com/recaptcha/api2/anchor','document','GET',main),request('https://www.google.com/other'),request('https://www.google.com/recaptcha/../other'),request('https://www.google.com.evil.test/recaptcha/api.js'),request('https://evil.test/recaptcha/api.js'),request('http://www.google.com/recaptcha/api.js'),request('https://www.google.com:444/recaptcha/api.js'),request('https://www.gstatic.com/recaptcha/data','xhr','POST'),request('https://www.google.com/recaptcha/data','xhr','DELETE')])assert.equal(session.requestAllowed(req),false);
+ const redirect=request('https://www.google.com/recaptcha/api.js');assert.equal(session.requestAllowed(redirect,'https://www.google.com/other'),false);
+ session.connection.recaptcha=false;assert.equal(session.requestAllowed(request('https://www.google.com/recaptcha/api.js')),false);
+ assert.throws(()=>validateProfile({connections:[{...base,recaptcha:'true'}]}));
+});

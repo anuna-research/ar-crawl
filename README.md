@@ -98,13 +98,14 @@ Within a configured secure session, the agent requests discovery and filling by 
 ```
 
 See [sensitive-field configuration](docs/secure-sessions.md#named-sensitive-fields) for the complete login, navigation and filling workflow.
-Login username and password selectors are optional; the submit selector and success marker remain required.
+All login selectors are optional overrides. Automatic login requires a unique submit control and a new visible sign-out control.
 
 **Sensitive filling is currently fill-only.**
 After filling, ar-crawl withholds page content and blocks clicks, navigation and keypresses.
 Further granted fills remain available; there is no payment-submission command.
 The approved website receives the value and can submit it automatically through its own scripts.
 Cross-origin payment-provider frames, select controls and expiry-format conversion are unsupported.
+An optional [reCAPTCHA permission](docs/secure-sessions.md#google-recaptcha-dependencies) allows verification traffic; it does not solve interactive challenges.
 
 ## Architecture
 
@@ -127,7 +128,8 @@ Crawling and formatting modules produce JSON, CSV, Markdown and SQLite output.
 The ordinary browser service runs in `playwright-service/server.js`.
 The secure driver runs separately in `playwright-service/secure-session.js`.
 
-Secure sessions restrict navigation and API requests to the connection's origin.
+Secure sessions keep top-level navigation on the connection's origin.
+External verification requests require the optional reCAPTCHA permission.
 Explicit resource origins permit selected static resources; they do not grant cross-origin form submission.
 Recordings, raw HTML, screenshots, evaluation and cookie exports are unavailable in secure mode.
 Known login values are redacted from state; sensitive filling suppresses subsequent page content entirely.
