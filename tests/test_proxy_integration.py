@@ -138,6 +138,18 @@ class ProxyIntegration(unittest.TestCase):
         self.assertNotIn('secret', result.stdout + result.stderr)
         return json.loads(result.stdout[result.stdout.index('{'):])
 
+    def test_crawl_help_exposes_proxy_options_without_fetching(self):
+        flags = ['--proxy ', '--proxy-user', '--proxy-pass', '--proxy-bypass', '--proxy-list', '--proxy-rotation']
+        for command in ['crawl', 'crawl-site']:
+            for args in [[command, '--help'], [command, 'https://example.invalid', '-h'], ['help', command]]:
+                with self.subTest(args=args):
+                    result = subprocess.run([RACKET, 'src/cli.rkt', *args], cwd=ROOT,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    for flag in flags:
+                        self.assertIn(flag, result.stdout)
+                    self.assertIn('without Playwright or Node.js', result.stdout)
+
     def test_http_auth_and_robots(self):
         with serving(HTTPProxy) as proxy:
             proxy.auth = True

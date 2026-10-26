@@ -5,13 +5,14 @@ title: How to select an outbound proxy
 
 # How to select an outbound proxy
 
-Use HTTP or SOCKS5 proxies with `crawl` and `crawl-site`. The HTTP adaptor requires `curl` on PATH; the Docker image includes it.
+Use HTTP or SOCKS5 proxies with `crawl` and `crawl-site`.
+Choose `--service direct` to use proxies without Playwright or Node.js. This requires `curl` on PATH; the Docker image includes it.
 
 ```bash
-ar-crawl crawl https://example.com --proxy socks5://proxy.example.com:1080
-ar-crawl crawl https://example.com --proxy http://proxy.example.com:8080 \
+ar-crawl crawl https://example.com --service direct --proxy socks5://proxy.example.com:1080
+ar-crawl crawl https://example.com --service direct --proxy http://proxy.example.com:8080 \
   --proxy-user alice --proxy-pass password --proxy-bypass '.local,.internal'
-ar-crawl crawl-site https://example.com --proxy-list proxies.txt --proxy-rotation round-robin
+ar-crawl crawl-site https://example.com --service direct --proxy-list proxies.txt --proxy-rotation round-robin
 ar-crawl crawl https://example.com -s playwright --proxy http://proxy.example.com:8080
 ```
 
@@ -65,5 +66,6 @@ Chromium rejects authenticated SOCKS5; use the HTTP adaptor for that combination
 Remove the flags and environment variables, or set `enabled: false`, to disable the feature on the next invocation.
 The behaviour and acceptance contracts are in [[SPEC-001-proxy-support]].
 
-
 Proxy URLs use the standard URL parsers. Omitted ports default to 80 for HTTP and 1080 for SOCKS5.
+
+Run `ar-crawl crawl --help` or `ar-crawl crawl-site --help` for the command options.

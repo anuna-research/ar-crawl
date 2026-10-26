@@ -23,7 +23,8 @@ The installer offers browser setup; source setup appears below.
 New features on `main` are not necessarily included in the latest published release.
 
 Proxy routing supports HTTP and SOCKS5 endpoints, authentication, bypass domains, and per-crawler proxy pools.
-See [[docs/proxy-support|How to select an outbound proxy]] for flags and configuration.
+Use `--service direct` for proxies without Playwright or Node.js; curl is required.
+See [How to select an outbound proxy](docs/proxy-support.md) for flags and configuration.
 
 ## Usage
 

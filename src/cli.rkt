@@ -3179,7 +3179,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
   ;; Handle --help and --version at any position
   (when (or (member "--help" args) (member "-h" args))
-    (show-main-help)
+    (define-values (options help-command remaining) (split-args-at-command args))
+    (if (member help-command '("crawl" "crawl-site"))
+        (show-command-help help-command)
+        (show-main-help))
     (exit EXIT-SUCCESS))
   (when (member "--version" args)
     (show-version)
@@ -3742,6 +3745,8 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  # Use a specific crawling service~n")
   (printf "  ar-crawl crawl https://example.com -s playwright~n~n")
 
+  (printf "  # Use a SOCKS5 proxy without a browser~n")
+  (printf "  ar-crawl crawl https://example.com -s direct --proxy socks5://proxy.example.com:1080~n~n")
   (printf "Run 'ar-crawl help <command>' for detailed help on a specific command.~n~n"))
 
 ;; @function{show-crawl-help}
@@ -3752,7 +3757,11 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "      --proxy-pass PASS   Proxy password~n")
   (printf "      --proxy-bypass LIST Comma-separated bypass domains~n")
   (printf "      --proxy-list FILE   Proxy URLs, one per line~n")
-  (printf "      --proxy-rotation MODE  per-request (default), sticky, round-robin~n~n"))
+  (printf "      --proxy-rotation MODE  per-request (default), sticky, round-robin~n~n")
+  (printf "  Use -s direct for proxy fetching without Playwright or Node.js (requires curl).~n")
+  (printf "  Default proxy ports: HTTP 80; SOCKS5 1080.~n")
+  (printf "  Proxy settings: CLI > config > PROXY_URL/PROXY_SERVER and PROXY_USER/PROXY_PASS.~n")
+  (printf "  Proxy failures never silently fall back to a direct connection.~n~n"))
 
 (define (show-crawl-help)
   (printf "~n")
@@ -3789,6 +3798,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  ar-crawl crawl https://blog.com/post --xpath \"//article\"~n~n")
   (printf "  # Use multiple services with automatic fallback~n")
   (printf "  ar-crawl crawl https://example.com -s firecrawl -s playwright -s direct~n~n")
+
+  (printf "  # Use an authenticated SOCKS5 proxy without a browser~n")
+  (printf "  ar-crawl crawl https://example.com -s direct --proxy socks5://proxy.example.com:1080 --proxy-user USER --proxy-pass PASS~n~n")
 
   (printf "SERVICES~n")
   (printf "  direct       Built-in HTTP client (no API key required)~n")
@@ -3840,6 +3852,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  ar-crawl crawl-site https://example.com --crawl-delay 2000~n~n")
   (printf "  # Include external links~n")
   (printf "  ar-crawl crawl-site https://example.com --allow-external~n~n")
+
+  (printf "  # Rotate proxies without a browser~n")
+  (printf "  ar-crawl crawl-site https://example.com -s direct --proxy-list proxies.txt --proxy-rotation round-robin~n~n")
 
   (printf "NOTES~n")
   (printf "  - By default, only same-domain URLs are followed~n")
