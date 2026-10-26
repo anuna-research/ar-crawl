@@ -1,0 +1,10 @@
+
+=== Dry Run: crawl ===
+
+URL:             https://example.com
+Services:        (direct)
+Output file:     (stdout)
+Output format:   json
+PW delay:        5000 ms
+
+No crawling will be performed.

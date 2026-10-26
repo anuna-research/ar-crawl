@@ -22,6 +22,9 @@ For secure sessions, use Node.js 22.13+ and Playwright 1.48+.
 The installer offers browser setup; source setup appears below.
 New features on `main` are not necessarily included in the latest published release.
 
+Proxy routing supports HTTP and SOCKS5 endpoints, authentication, bypass domains, and per-crawler proxy pools.
+See [[docs/proxy-support|How to select an outbound proxy]] for flags and configuration.
+
 ## Usage
 
 ### Crawl and extract

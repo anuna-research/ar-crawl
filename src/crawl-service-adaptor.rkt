@@ -11,6 +11,7 @@
 
 (require racket/contract
          racket/date
+         "proxy-transport.rkt"
          net/url
          net/uri-codec
          json
@@ -85,7 +86,8 @@
   [direct-http-adaptor (->* (string?)
                            (#:timeout exact-positive-integer?
                             #:user-agent string?
-                            #:follow-redirects boolean?)
+                            #:follow-redirects boolean?
+                            #:proxy (or/c hash? #f))
                            (or/c hash? #f))]
 
   ;; Playwright local browser service
@@ -96,7 +98,8 @@
                            #:viewport hash?
                            #:user-agent string?
                            #:block-resources (listof string?)
-                           #:extract-links boolean?)
+                           #:extract-links boolean?
+                           #:proxy (or/c hash? #f))
                           (or/c hash? #f))]))
 
 ;; Environment Variables
@@ -302,12 +305,16 @@
                            #:viewport [viewport (hash 'width 1920 'height 1080)]
                            #:user-agent [user-agent "AR-Crawl/1.0 Playwright (+https://github.com/anuna-research/ar-crawl)"]
                            #:block-resources [block-resources '()]
-                           #:extract-links [extract-links #t])
+                           #:extract-links [extract-links #t]
+                           #:proxy [proxy #f])
 
   (define endpoint (string-append service-url "/fetch"))
 
   (define payload
-    (hash 'url url
+    (hash 'proxy (if proxy
+                      (hash-set proxy 'bypass (string-join (hash-ref proxy 'bypass '()) ","))
+                      'null)
+          'url url
           'timeout timeout
           'waitFor wait-for
           'delay delay
@@ -322,7 +329,7 @@
           'extractLinks extract-links))
 
   (with-handlers ([exn:fail? (lambda (e)
-                              (printf "Playwright service error: ~a~n" (exn-message e))
+                              (printf "Playwright service request failed~n")
                               #f)])
     (let* ([json-payload (jsexpr->string payload)]
            [headers (list "Content-Type: application/json")]
@@ -380,12 +387,15 @@
 ;; @function{call-service}
 ;; @description{Call specific service with config}
 (define (call-service service url config)
+  (define proxy (and (hash-ref config 'proxy-selector #f)
+                     ((hash-ref config 'proxy-selector))))
   (case service
     [(direct)
      (direct-http-adaptor url
                          #:timeout (hash-ref config 'timeout 30000)
                          #:user-agent (hash-ref config 'user-agent "AR-Crawl/1.0")
-                         #:follow-redirects (hash-ref config 'follow-redirects #t))]
+                         #:follow-redirects (hash-ref config 'follow-redirects #t)
+                         #:proxy proxy)]
     
     [(firecrawl)
      (firecrawl-adaptor url
@@ -425,7 +435,8 @@
                         #:viewport (hash-ref config 'viewport (hash 'width 1920 'height 1080))
                         #:user-agent (hash-ref config 'user-agent "AR-Crawl/1.0 Playwright")
                         #:block-resources (hash-ref config 'block-resources '())
-                        #:extract-links (hash-ref config 'extract-links #t))]
+                        #:extract-links (hash-ref config 'extract-links #t)
+                        #:proxy proxy)]
 
     [else
      (let ([custom-service (hash-ref service-registry service #f)])
@@ -582,14 +593,18 @@
 (define (direct-http-adaptor url
                             #:timeout [timeout 30000]
                             #:user-agent [user-agent "AR-Crawl/1.0 (+https://github.com/anuna-research/ar-crawl)"]
-                            #:follow-redirects [follow-redirects #t])
+                            #:follow-redirects [follow-redirects #t]
+                            #:proxy [proxy #f])
   
   (with-handlers ([exn:fail? (lambda (e)
-                              (printf "Direct HTTP error: ~a~n" (exn-message e))
+                              (printf "Direct HTTP request failed~n")
                               #f)])
     (let* ([headers (list (format "User-Agent: ~a" user-agent))]
            [max-redirects (if follow-redirects 5 0)]
-           [port (get-pure-port (string->url url) headers #:redirections max-redirects)]
+           [port (if proxy
+                     (open-input-string (proxy-fetch url proxy #:timeout timeout #:user-agent user-agent
+                                                     #:follow-redirects follow-redirects))
+                     (get-pure-port (string->url url) headers #:redirections max-redirects))]
            [content (port->string port)])
       (close-input-port port)
       

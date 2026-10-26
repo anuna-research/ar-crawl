@@ -9,7 +9,8 @@
  web crawling etiquette as defined in the Robots Exclusion Protocol.
 |#
 
-(require racket/contract
+(require "proxy-transport.rkt"
+         racket/contract
          racket/string
          racket/list
          racket/hash
@@ -47,7 +48,7 @@
 (provide/contract
   ;; Main functions
   [fetch-robots-txt
-   (-> string? string? (or/c robots-txt? #f))]
+   (->* (string? string?) (#:proxy (or/c hash? #f)) (or/c robots-txt? #f))]
   
   [parse-robots-txt
    (-> string? string? robots-txt?)]
@@ -97,31 +98,35 @@
 
 ;; @function{fetch-robots-txt}
 ;; @description{Fetch and parse robots.txt from a given URL}
-(define (fetch-robots-txt base-url user-agent)
+(define (fetch-robots-txt base-url user-agent #:proxy [proxy #f])
   (define robots-url (robots-txt-url base-url))
-  
+
   (with-handlers ([exn? (lambda (e)
-                         (log-warning "Failed to fetch robots.txt from ~a: ~a" 
+                         (log-warning "Failed to fetch robots.txt from ~a: ~a"
                                     robots-url (exn-message e))
                          #f)])
-    (define-values (status headers in)
-      (http-sendrecv (url-host (string->url robots-url))
-                     (url-path (string->url robots-url))
-                     #:ssl? (string=? (url-scheme (string->url robots-url)) "https")
-                     #:port (or (url-port (string->url robots-url))
-                               (if (string=? (url-scheme (string->url robots-url)) "https")
-                                   443
-                                   80))
-                     #:headers (list (format "User-Agent: ~a" user-agent))))
-    
-    (if (string=? status "200")
-        (let ([content (port->string in)])
-          (close-input-port in)
-          (parse-robots-txt content (get-host-from-url base-url)))
-        (begin
-          (close-input-port in)
-          (log-info "robots.txt returned status ~a for ~a" status robots-url)
-          #f))))
+    (if proxy
+        (parse-robots-txt (proxy-fetch robots-url proxy #:timeout ROBOTS-TXT-TIMEOUT-MS #:user-agent user-agent)
+                          (get-host-from-url base-url))
+        (let ()
+          (define-values (status headers in)
+            (http-sendrecv (url-host (string->url robots-url))
+                           (url-path (string->url robots-url))
+                           #:ssl? (string=? (url-scheme (string->url robots-url)) "https")
+                           #:port (or (url-port (string->url robots-url))
+                                     (if (string=? (url-scheme (string->url robots-url)) "https")
+                                         443
+                                         80))
+                           #:headers (list (format "User-Agent: ~a" user-agent))))
+
+          (if (string=? status "200")
+              (let ([content (port->string in)])
+                (close-input-port in)
+                (parse-robots-txt content (get-host-from-url base-url)))
+              (begin
+                (close-input-port in)
+                (log-info "robots.txt returned status ~a for ~a" status robots-url)
+                #f))))))
 
 ;; @function{parse-robots-txt}
 ;; @description{Parse robots.txt content into structured data}

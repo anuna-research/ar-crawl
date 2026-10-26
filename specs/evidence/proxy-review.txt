@@ -1,0 +1,29 @@
+Adversarial review: SPEC-001 proxy support
+Verdict: changes required. No repository files edited by reviewer.
+
+Comprehension gate: intent is explicit outbound route selection with no implicit direct fallback. Predicted dead proxy + reachable origin => failure, origin untouched; PROXY_URL wins over PROXY_SERVER, higher endpoint source replaces lower, other fields merge independently; browser authenticated SOCKS5 rejected before browser creation. Procedural caveat: initial read displayed the full specification rather than Orientation only. Therefore this run does not satisfy the strict Orientation-only comprehension-gate procedure, though the adversarial findings below are independently reproduced.
+
+1. P1: HTTP proxy authentication failures reported as successful crawls.
+Location: src/proxy-transport.rkt:39,49-51.
+The transport tests only curl exit status and supplies no HTTP failure/status handling. For plain HTTP an HTTP proxy returning 407 is a successful curl process; adaptor returns successful empty/error-page content, stops service retries, and robots can parse a proxy error as policy.
+Reproduction: use tests/test_proxy_integration.py serving(HTTPProxy), set proxy.auth=True, call tests/proxy-transport-driver.rkt direct http://target.invalid/ with server pointing at fixture, username=user,password=wrong. Observed {"content":"","success":true}. Test fixture exists but HTTP negative authentication is not exercised (only SOCKS negative auth).
+Requirement: TEST-103 wrong credentials, OBS-101 routing outcomes; failed authentication is not fetched target content. Detect proxy failure status and return generic failure.
+
+2. P1: Browser bypass semantics differ from specified exact host + dot-boundary subdomains.
+Location: playwright-service/server.js:3420.
+Passing raw bypass hosts to Chromium does not implement REQ-103. Reproduced using installed Playwright Chromium and local Origin/HTTPProxy fixtures, browser launch --host-resolver-rules mapping example.test and *.example.test to 127.0.0.1. Context proxy bypass '<-loopback>,example.test': apex origin direct, sub.example.test through proxy. Bypass '<-loopback>,.example.test': apex through proxy, subdomain direct. Both forms must support apex and subdomains according to spec. Expand each recognized domain into appropriate native rules and add actual-browser apex/subdomain/suffix-confusion tests, including redirects/subresources.
+
+3. P2: Config validation prevents independent CLI/config/env credential merging.
+Location: src/config-manager.rkt:91-92.
+load-config calls validate-config before CLI resolution; validate-config resolves the config against empty CLI and empty environment, enforcing complete credentials too early. Valid config server+username plus PROXY_PASS or --proxy-pass is rejected. Likewise enabled:true supplied in config with endpoint supplied only by CLI/env is rejected as empty pool.
+Reproduction: (require "src/proxy-config.rkt" "src/config-manager.rkt"); c=(hash 'server "http://host:80" 'username "u"); (validate-config (hash-set (default-config) 'proxy c)) => #f; (resolve-proxy-config c (hash 'password "p") (lambda (_) #f)) succeeds. Violates REQ-101 independent fields merging. Validate source field shapes first, complete merged configuration at CLI boundary.
+
+4. P2: Recognizer accepts invalid host syntax, violating malformed-input hard stop.
+Location: src/proxy-config.rkt:11-15,22-24; playwright-service/proxy-config.js bypass regex and endpoint checks.
+Reproduction: (recognize-proxy "http://a..b:80") => server hash; (recognize-proxy "http://[:::]:80") => server hash. Neither is DNS labels nor IPv6. Bypass also admits a..b and labels beginning/ending hyphens. net/url parses structure but does not validate these host grammars. A malformed pool member can therefore survive full-pool recognition and allow earlier valid members to make network requests. Use proper host recognition and ensure browser/Racket boundaries agree.
+
+5. P2: Percent-encoded colon in username silently changes the authentication identity.
+Location: src/proxy-config.rkt:30-34.
+net/url has already URI-decoded url-user when code splits on colon. (recognize-proxy "http://a%3Ab:p@host:80") => username="a",password="b:p", rather than rejection (explicit username colon is rejected elsewhere) or correctly preserving the username. Split encoded userinfo before decoding its components; reject unsupported colon-bearing usernames before I/O. Add percent-encoded delimiter tests. This also lets encoded ':' provide the only delimiter in otherwise incomplete userinfo.
+
+Checks performed: Racket proxy unit tests pass (6); Node boundary tests pass (2). Additional executable repros above reveal gaps those tests miss. Reviewed git diff, proxy modules, plan, Makefile, test fixtures and surrounding CLI/config/browser flow. Makefile includes new browser module. Existing HTTP/SOCKS fixtures do not cover HTTPS CONNECT, HTTP negative auth, browser domain bypass semantics, or redirect bypass. No approval based solely on existing green tests. Concurrent parent edits were observed during review (SOCKS proxy conversion changed); findings refer to lines/content at review time and should be rechecked after remediation.

@@ -12,6 +12,7 @@
 (require racket/contract
          racket/string
          racket/file
+         "proxy-config.rkt"
          json
          (prefix-in utils: "utils.rkt"))
 
@@ -87,6 +88,9 @@
 ;; @description{Validate configuration structure}
 (define (validate-config config)
   (and (hash? config)
+       (with-handlers ([exn:fail? (lambda (_) #f)])
+         (check-proxy-fields (hash-ref config 'proxy (hash)))
+         #t)
        (hash-has-key? config 'crawler)
        (hash-has-key? config 'services)
        (validate-crawler-config (hash-ref config 'crawler))

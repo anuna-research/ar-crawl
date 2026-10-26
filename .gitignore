@@ -53,3 +53,6 @@ coverage/
 # Distribution artifacts
 dist/
 *.tar.gz
+
+# Local specification index
+.zetl/

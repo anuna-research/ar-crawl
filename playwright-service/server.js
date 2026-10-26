@@ -1,3 +1,4 @@
+const { browserProxy } = require('./proxy-config');
 const http = require('http');
 const { chromium } = require('playwright-extra');
 const { _android } = require('playwright');
@@ -3410,11 +3411,13 @@ async function fetchPage(options) {
     extractLinks = true
   } = options;
 
+  const proxy = browserProxy(options.proxy);
   const startTime = Date.now();
   const b = await initBrowser();
   const context = await b.newContext({
     viewport,
-    userAgent
+    userAgent,
+    ...(proxy ? { proxy } : {})
   });
 
   const page = await context.newPage();
@@ -3568,9 +3571,9 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (error) {
-      console.error('Fetch error:', error.message);
+      console.error('Fetch request failed');
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: error.message }));
+      res.end(JSON.stringify({ error: 'Fetch request failed' }));
     }
     return;
   }

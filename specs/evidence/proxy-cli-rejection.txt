@@ -1,0 +1,4 @@
+proxy-config: Playwright does not support authenticated SOCKS5; use the direct HTTP adaptor
+  context...:
+   /Users/anuna-02/Code/ar-crawl/src/cli.rkt:249:0: cmd-crawl
+   body of (submod "/Users/anuna-02/Code/ar-crawl/src/cli.rkt" main)

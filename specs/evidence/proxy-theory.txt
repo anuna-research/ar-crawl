@@ -1,0 +1,25 @@
+Explanation for +D completed(proxy-support)
+This was proven using only strict rules and facts (cannot be defeated).
+
+Derivation:
+  1. "completed(proxy-support)" was derived strictly
+     Using strict rule: r-done
+     Prerequisites:
+       1. "completed(config)" was derived strictly
+          Using strict rule: r-complete-config
+          Prerequisites:
+            1. "verified(config)" was established as a fact
+               Using fact: f18
+       1. "completed(transport)" was derived strictly
+          Using strict rule: r-complete-transport
+          Prerequisites:
+            1. "verified(transport)" was established as a fact
+               Using fact: f19
+       1. "completed(acceptance)" was derived strictly
+          Using strict rule: r-complete-acceptance
+          Prerequisites:
+            1. "verified(acceptance)" was established as a fact
+               Using fact: f20
+
+sha256:5db5c7f8a7e78ae296e7cc29723fcd66ed447b35e40e1ff4f89ab5790ddb6f28
+  algorithm elephant.closure.v1  (20 conclusions, excluding membership, local_aliases, theory_id, signers, timestamps)

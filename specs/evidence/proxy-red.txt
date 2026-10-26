@@ -1,0 +1,53 @@
+raco test: (submod (file "tests/test-proxy.rkt") test)
+--------------------
+TEST-101 precedence and explicit disable
+ERROR
+name:       check-equal?
+location:   tests/test-proxy.rkt:9:4
+
+hash-ref: contract violation
+  expected: hash?
+  given: #f
+  argument position: 1st
+  other arguments...:
+   'server
+--------------------
+--------------------
+TEST-101 credentials and URL recognition
+ERROR
+name:       check-equal?
+location:   tests/test-proxy.rkt:17:4
+
+hash-ref: no value found for key
+  key: 'username
+--------------------
+--------------------
+TEST-105 full config recognition
+FAILURE
+name:       check-exn
+location:   tests/test-proxy.rkt:24:6
+params:     '(#<procedure:exn:fail?> #<procedure:...ests/test-proxy.rkt:24:27>)
+message:    "No exception raised"
+--------------------
+--------------------
+TEST-102 rotation and isolation
+ERROR
+name:       check-equal?
+location:   tests/test-proxy.rkt:28:4
+
+hash-ref: contract violation
+  expected: hash?
+  given: #f
+  argument position: 1st
+  other arguments...:
+   'server
+--------------------
+--------------------
+TEST-103 bypass grammar
+FAILURE
+name:       check-true
+location:   tests/test-proxy.rkt:41:4
+params:     '(#f)
+--------------------
+5/6 test failures
+'#hash((server . "http://secret:secret@host:80/bad"))

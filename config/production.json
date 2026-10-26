@@ -10,7 +10,14 @@
     "log_level": "info",
     "output_format": "json"
   },
+  "proxy": {
+    "enabled": false,
+    "bypass": [],
+    "rotation": "per-request"
+  },
   "services": {
+    "direct": { "use_proxy": true },
+    "playwright": { "use_proxy": true },
     "firecrawl": {
       "api_key": "${FIRECRAWL_API_KEY}",
       "formats": ["markdown", "html"],

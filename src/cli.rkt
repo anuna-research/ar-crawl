@@ -19,6 +19,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
          net/base64
          "production-crawler.rkt"
          "config-manager.rkt"
+         "proxy-config.rkt"
          "crawl-service-adaptor.rkt"
          "scraper-interfaces.rkt"
          "site-crawler.rkt"
@@ -31,6 +32,10 @@ Command-line interface for the web crawler for agents with service fallbacks.
 (module+ main)
 
 ;; Global state
+(define proxy-cli-options (make-parameter (hash)))
+(define (set-proxy-option! key value)
+  (proxy-cli-options (hash-set (proxy-cli-options) key value)))
+
 (define current-crawler #f)
 (define global-config #f)
 
@@ -294,6 +299,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
         (and output-file (detect-format-from-extension output-file))
         'json))
 
+  (attach-proxy-config (hash-ref global-config 'services (hash))
+                       (resolve-proxy-config (hash-ref global-config 'proxy (hash)) (proxy-cli-options))
+                       effective-services)
   ;; Dry-run mode: show what would be done and exit
   (when dry-run
     (printf "~n~a~n~n" (color-bold "=== Dry Run: crawl ==="))
@@ -311,6 +319,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (printf "~nNo crawling will be performed.~n")
     (exit EXIT-SUCCESS))
 
+  (attach-proxy-config (hash-ref global-config 'services (hash))
+                       (resolve-proxy-config (hash-ref global-config 'proxy (hash)) (proxy-cli-options))
+                       effective-services)
   (ensure-playwright-if-needed effective-services #:verbose verbose)
 
   (define crawler (create-crawler-from-config))
@@ -376,6 +387,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (define config-services (get-config-value global-config '(crawler services) '("direct")))
   (define effective-services
     (map (lambda (s) (if (symbol? s) s (string->symbol s))) config-services))
+  (attach-proxy-config (hash-ref global-config 'services (hash))
+                       (resolve-proxy-config (hash-ref global-config 'proxy (hash)) (proxy-cli-options))
+                       effective-services)
   (ensure-playwright-if-needed effective-services #:verbose verbose)
 
   (define crawler (create-crawler-from-config))
@@ -2776,6 +2790,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 ;; @function{create-crawler-from-config}
 ;; @description{Create crawler from global config}
 (define (create-crawler-from-config)
+  (define proxy (resolve-proxy-config (hash-ref global-config 'proxy (hash)) (proxy-cli-options)))
   (define config-services (get-config-value global-config '(crawler services) '("direct")))
   (create-production-crawler
    (make-production-crawler-config
@@ -2788,7 +2803,9 @@ Command-line interface for the web crawler for agents with service fallbacks.
     #:enable-monitoring (get-config-value global-config '(crawler enable_monitoring) #t)
     #:log-level (string->symbol (get-config-value global-config '(crawler log_level) "info"))
     #:output-format (string->symbol (get-config-value global-config '(crawler output_format) "json"))
-    #:service-configs (get-config-value global-config '(services) (hash)))))
+    #:service-configs (attach-proxy-config
+                      (get-config-value global-config '(services) (hash)) proxy
+                      (map (lambda (s) (if (symbol? s) s (string->symbol s))) config-services)))))
 
 ;; @function{output-results}
 ;; @description{Output crawl results}
@@ -3038,6 +3055,18 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (pw-click-count (string->number count))]
    [("--pw-delay") delay "Delay after page load in ms"
     (pw-delay (string->number delay))]
+   [("--proxy") endpoint "HTTP or SOCKS5 proxy URL"
+    (set-proxy-option! 'server endpoint)]
+   [("--proxy-user") user "Proxy username"
+    (set-proxy-option! 'username user)]
+   [("--proxy-pass") password "Proxy password"
+    (set-proxy-option! 'password password)]
+   [("--proxy-bypass") domains "Comma-separated bypass domains"
+    (set-proxy-option! 'bypass (if (equal? domains "") '() (string-split domains "," #:trim? #f)))]
+   [("--proxy-list") file "Proxy URL list file"
+    (set-proxy-option! 'pool (read-proxy-list file))]
+   [("--proxy-rotation") mode "per-request, sticky, or round-robin"
+    (set-proxy-option! 'rotation mode)]
    #:multi
    [("-s" "--service") service "Crawling service to use (repeatable)"
     (selected-services (cons (string->symbol service) (selected-services)))]
@@ -3073,6 +3102,18 @@ Command-line interface for the web crawler for agents with service fallbacks.
     (same-domain-only #f)]
    [("--crawl-delay") delay "Delay between requests in ms (default: 1000)"
     (crawl-delay-ms (string->number delay))]
+   [("--proxy") endpoint "HTTP or SOCKS5 proxy URL"
+    (set-proxy-option! 'server endpoint)]
+   [("--proxy-user") user "Proxy username"
+    (set-proxy-option! 'username user)]
+   [("--proxy-pass") password "Proxy password"
+    (set-proxy-option! 'password password)]
+   [("--proxy-bypass") domains "Comma-separated bypass domains"
+    (set-proxy-option! 'bypass (if (equal? domains "") '() (string-split domains "," #:trim? #f)))]
+   [("--proxy-list") file "Proxy URL list file"
+    (set-proxy-option! 'pool (read-proxy-list file))]
+   [("--proxy-rotation") mode "per-request, sticky, or round-robin"
+    (set-proxy-option! 'rotation mode)]
    #:multi
    [("-s" "--service") service "Crawling service to use (repeatable)"
     (selected-services (cons (string->symbol service) (selected-services)))]
@@ -3705,6 +3746,14 @@ Command-line interface for the web crawler for agents with service fallbacks.
 
 ;; @function{show-crawl-help}
 ;; @description{Display help for the crawl command}
+(define (show-proxy-help)
+  (printf "      --proxy URL         HTTP or SOCKS5 proxy (explicit port required)~n")
+  (printf "      --proxy-user USER   Proxy username~n")
+  (printf "      --proxy-pass PASS   Proxy password~n")
+  (printf "      --proxy-bypass LIST Comma-separated bypass domains~n")
+  (printf "      --proxy-list FILE   Proxy URLs, one per line~n")
+  (printf "      --proxy-rotation MODE  per-request (default), sticky, round-robin~n~n"))
+
 (define (show-crawl-help)
   (printf "~n")
   (printf "AR-CRAWL CRAWL - Crawl a Single URL~n")
@@ -3728,6 +3777,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  -v, --verbose       Show detailed progress and debugging info~n")
   (printf "  -n, --dry-run       Show what would be done without crawling~n~n")
 
+  (show-proxy-help)
   (printf "EXAMPLES~n")
   (printf "  # Basic crawl~n")
   (printf "  ar-crawl crawl https://example.com~n~n")
@@ -3776,6 +3826,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
   (printf "  -v, --verbose          Show detailed progress~n")
   (printf "  -n, --dry-run          Show what would be done without crawling~n~n")
 
+  (show-proxy-help)
   (printf "EXAMPLES~n")
   (printf "  # Crawl a site with default settings~n")
   (printf "  ar-crawl crawl-site https://docs.example.com~n~n")

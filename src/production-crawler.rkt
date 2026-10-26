@@ -17,9 +17,11 @@
          uuid
          "scraper-interfaces.rkt"
          "crawl-service-adaptor.rkt"
+         "proxy-config.rkt"
          "utils.rkt")
 
-(provide
+(provide crawler-proxy-for-robots
+
  (contract-out
   ;; Main crawler interface
   [create-production-crawler 
@@ -72,6 +74,12 @@
    [health-status-services (-> health-status? hash?)]
    [health-status-uptime (-> health-status? real?)]
    [health-status-last-check (-> health-status? exact-integer?)]))
+
+(define (crawler-proxy-for-robots crawler)
+  (define configs (crawler-config-service-configs (production-crawler-config crawler)))
+  (for/or ([service (crawler-config-services (production-crawler-config crawler))])
+    (define selector (hash-ref (hash-ref configs service (hash)) 'proxy-selector #f))
+    (and selector (selector))))
 
 ;; Data Structures
 ;; ---------------
@@ -168,7 +176,10 @@
 
 ;; @function{create-production-crawler}
 ;; @description{Create a new production crawler instance}
-(define (create-production-crawler config)
+(define (create-production-crawler template-config)
+  (define config (struct-copy crawler-config template-config
+                              [service-configs (instantiate-proxy-selectors
+                                                (crawler-config-service-configs template-config))]))
   (define logger (make-logger 'production-crawler))
   
   (define job-manager (make-job-manager config logger))
@@ -178,7 +189,7 @@
         (make-metrics-collector)
         #f))
   
-  (log-info logger "Production crawler created with config: ~a" config)
+  (log-info logger "Production crawler created")
   
   (production-crawler config
                      job-manager

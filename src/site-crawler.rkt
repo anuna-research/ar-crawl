@@ -214,7 +214,8 @@
   (define robots-cache (create-robots-cache))
   (define robots-txt-data 
     (if (site-crawl-config-respect-robots config)
-        (fetch-robots-txt seed-url (site-crawl-config-user-agent config))
+        (fetch-robots-txt seed-url (site-crawl-config-user-agent config)
+                          #:proxy (crawler-proxy-for-robots crawler))
         #f))
   
   (when (and robots-txt-data progress-callback)
@@ -348,7 +349,8 @@
                 [result (get-job-results crawler job-id)]
                 [new-visited (set-add visited current-url)])
            
-           (define page-data (and result (car (job-results-data result))))
+           (define page-data (and result (pair? (job-results-data result))
+                                  (car (job-results-data result))))
            (if (and result page-data (hash? page-data))
                ;; Success - extract links and continue
                (let* ([links (extract-links-from-result page-data)]
