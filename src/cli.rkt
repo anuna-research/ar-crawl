@@ -3747,7 +3747,7 @@ Command-line interface for the web crawler for agents with service fallbacks.
 ;; @function{show-crawl-help}
 ;; @description{Display help for the crawl command}
 (define (show-proxy-help)
-  (printf "      --proxy URL         HTTP or SOCKS5 proxy (explicit port required)~n")
+  (printf "      --proxy URL         HTTP or SOCKS5 proxy URL~n")
   (printf "      --proxy-user USER   Proxy username~n")
   (printf "      --proxy-pass PASS   Proxy password~n")
   (printf "      --proxy-bypass LIST Comma-separated bypass domains~n")

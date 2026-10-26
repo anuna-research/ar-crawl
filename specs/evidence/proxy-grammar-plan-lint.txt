@@ -1,3 +1,0 @@
-          longest_sentence       20 (limit 25, mode descriptive)
-          scanned                29 sentences, 328 words
-          TOTAL                  0 errors, 0 warnings

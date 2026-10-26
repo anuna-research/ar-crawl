@@ -1,3 +1,0 @@
-raco test: (submod (file "tests/test-proxy.rkt") test)
-raco test: (submod (file "tests/test-proxy-grammar.rkt") test)
-80 tests passed

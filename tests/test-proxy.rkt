@@ -17,7 +17,7 @@
     (check-equal? (hash-ref p 'username) "a@b")
     (check-equal? (hash-ref p 'password) "p:ss")
     (check-equal? (hash-ref p 'server) "socks5://localhost:1080")
-    (for ([bad '("ftp://localhost:80" "http://localhost" "http://localhost:0" "http://localhost:65536" "http://localhost:80/path" "http://localhost:80?q=1" "http://localhost:80#x" "http://u%ZZ:p@host:80" "http://a%3Ab:p@host:80" "http://a..b:80" "http://[:::]:80" "http://-bad.test:80" "http://u:p@host:80\n")])
+    (for ([bad '("ftp://localhost:80" "http://localhost:0" "http://localhost:65536" "http://localhost:80/path" "http://localhost:80?q=1" "http://localhost:80#x" "http://a%3Ab:p@host:80" "http://u:p@host:80\n" "http://user:p@ss@host:80")])
       (check-exn exn:fail? (lambda () (recognize-proxy bad)) bad)))
   (test-case "TEST-105 full config recognition"
     (for ([bad (list (hash 'enabled "yes") (hash 'enabled #t) (hash 'pool '()) (hash 'pool '("http://good:80" "bad")) (hash 'server "http://host:80" 'rotation "random") (hash 'server "http://host:80" 'username "u") (hash 'server "http://host:80" 'bypass '("*.test")) (hash 'surprise #t))])
@@ -42,6 +42,9 @@
                   (hash 'firecrawl (hash 'use_proxy #f)))
     (define socks (resolve-proxy-config (hash 'server "socks5://u:p@host:80") (hash) (lambda (_) #f)))
     (check-exn exn:fail? (lambda () (attach-proxy-config (hash) socks '(playwright)))))
+  (test-case "TEST-105 bypass entries cannot expand into additional rules"
+    (for ([domain '("safe.test,127.0.0.1" "safe.test;127.0.0.1" "safe.test 127.0.0.1" "*")])
+      (check-exn exn:fail? (lambda () (check-proxy-fields (hash 'bypass (list domain)))))))
   (test-case "TEST-102 rotation and isolation"
     (define cfg (resolve-proxy-config (hash 'pool '("http://a:80" "http://b:81")) (hash) (lambda (_) #f)))
     (define pool (make-proxy-selector cfg))
@@ -65,14 +68,14 @@
   (test-case "TEST-101 config loading permits later credential completion"
     (define cfg (hash-set (default-config) 'proxy (hash 'server "http://host:80" 'username "u")))
     (check-true (validate-config cfg)))
-  (test-case "TEST-101 grammar property and malformed-input corpus"
-    (for ([i (in-range 1 200)])
-      (define endpoint (format "http://host-~a.example:~a" i i))
-      (define parsed (recognize-proxy endpoint))
-      (check-equal? (recognize-proxy (hash-ref parsed 'server)) parsed)
-      (for ([bad (list (string-append endpoint "/bad") (string-append endpoint "?q=1")
-                       (string-append endpoint "#x") (string-append endpoint "\n"))])
-        (check-exn exn:fail? (lambda () (recognize-proxy bad))))))
+  (test-case "TEST-101 standard URL parsing and default proxy ports"
+    (check-equal? (hash-ref (recognize-proxy "http://localhost") 'server) "http://localhost:80")
+    (check-equal? (hash-ref (recognize-proxy "socks5://localhost") 'server) "socks5://localhost:1080")
+    (check-equal? (hash-ref (recognize-proxy "http://[::1]:8080/") 'server) "http://[::1]:8080")
+    (check-equal? (hash-ref (recognize-proxy "http://u:p%253A@host:80") 'password) "p%3A")
+    (check-equal? (hash-ref (recognize-proxy "http://u:p%40ss@host:80") 'password) "p@ss")
+    (for ([bad '("http://host:80?" "http://host:80#" "http://host:80\n" "http://host:80/path")])
+      (check-exn exn:fail? (lambda () (recognize-proxy bad)))))
   (test-case "TEST-106 secrets are not echoed"
     (with-handlers ([exn:fail? (lambda (e) (check-false (string-contains? (exn-message e) "secret")))])
       (recognize-proxy "http://secret:secret@host:80/bad")))

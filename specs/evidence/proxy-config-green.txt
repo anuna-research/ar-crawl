@@ -1,2 +1,0 @@
-raco test: (submod (file "tests/test-proxy.rkt") test)
-11 tests passed

@@ -1,20 +1,58 @@
 #lang racket
 
-(require "proxy-input.rkt" racket/hash)
+(require net/url net/uri-codec racket/hash)
 (provide resolve-proxy-config recognize-proxy make-proxy-selector
          read-proxy-list attach-proxy-config check-proxy-fields instantiate-proxy-selectors)
 
 ;; CON-101 (SPEC-001-proxy-support): recognise complete inputs before I/O.
 (define (invalid field) (error 'proxy-config "Invalid proxy ~a" field))
-(define clean-string? clean-proxy-string?)
+(define (clean-string? value)
+  (and (string? value)
+       (for/and ([c (in-string value)])
+         (and (>= (char->integer c) 32) (not (= (char->integer c) 127))))))
+
 (define (recognize-proxy endpoint)
   (with-handlers ([exn:fail? (lambda (_) (invalid 'server))])
-    (proxy-input-endpoint (parse-proxy-input 'endpoint endpoint))))
+    (unless (and (clean-string? endpoint) (not (ormap char-whitespace? (string->list endpoint))))
+      (invalid 'server))
+    (define u (string->url endpoint))
+    ;; net/url's own recogniser preserves raw userinfo before percent decoding.
+    (define parts (regexp-match url-regexp endpoint))
+    (define port (or (url-port u) (if (equal? (url-scheme u) "http") 80 1080)))
+    (unless (and (member (url-scheme u) '("http" "socks5"))
+                 (url-host u) (not (equal? (url-host u) ""))
+                 (not (string-contains? (url-host u) "@"))
+                 (<= 1 port 65535)
+                 (member (list-ref parts 6) '("" "/"))
+                 (not (list-ref parts 7)) (not (list-ref parts 8)))
+      (invalid 'server))
+    (define base (hash 'server (url->string (struct-copy url u [user #f] [port port]
+                                                        [path '()] [path-absolute? #f]))))
+    (cond
+      [(list-ref parts 2)
+       (define credentials (string-split (list-ref parts 2) ":" #:trim? #f))
+       (unless (>= (length credentials) 2) (invalid 'credentials))
+       (define username (uri-decode (car credentials)))
+       (define password (uri-decode (string-join (cdr credentials) ":")))
+       (unless (and (clean-string? username) (clean-string? password)
+                    (not (string-contains? username ":")))
+         (invalid 'credentials))
+       (hash-set* base 'username username 'password password)]
+      [else base])))
 
-(define check-proxy-fields
-  (lambda (cfg) (check-fields cfg)))
+(define (bypass-domain? value)
+  (and (clean-string? value)
+       (not (for/or ([c (in-string value)])
+              (or (char-whitespace? c) (memv c '(#\* #\, #\;)))))
+       (with-handlers ([exn:fail? (lambda (_) #f)])
+         (define domain (if (string-prefix? value ".") (substring value 1) value))
+         (define u (string->url (string-append "http://" domain)))
+         (and (not (equal? domain ""))
+              (equal? (url-host u) (string-downcase domain))
+              (not (url-user u)) (not (url-port u)) (null? (url-path u))
+              (null? (url-query u)) (not (url-fragment u))))))
 
-(define (check-fields cfg)
+(define (check-proxy-fields cfg)
   (unless (hash? cfg) (invalid 'section))
   (for ([(key value) (in-hash cfg)])
     (case key
@@ -25,15 +63,13 @@
       [(pool) (unless (and (list? value) (pair? value)) (invalid key))
               (for-each recognize-proxy value)]
       [(bypass) (unless (and (list? value)
-                            (andmap (lambda (v)
-                                      (with-handlers ([exn:fail? (lambda (_) #f)])
-                                        (parse-proxy-input 'bypass-host v) #t)) value))
+                            (andmap bypass-domain? value))
                   (invalid key))]
       [else (invalid 'field)])))
 
 (define (resolve-proxy-config config [cli (hash)] [env getenv])
-  (check-fields config)
-  (check-fields cli)
+  (check-proxy-fields config)
+  (check-proxy-fields cli)
   (when (and (hash-has-key? cli 'server) (hash-has-key? cli 'pool))
     (invalid 'endpoint-conflict))
   (define env-cfg
@@ -52,7 +88,7 @@
   (cond
     [(not enabled) #f]
     [else
-     (check-fields merged)
+     (check-proxy-fields merged)
      (define entries (hash-ref merged 'pool (lambda () (if (hash-has-key? merged 'server) (list (hash-ref merged 'server)) '()))))
      (unless (pair? entries) (invalid 'pool))
      (define parsed
@@ -83,9 +119,7 @@
             (define selected (list-ref entries index))
             (unless (equal? (hash-ref config 'rotation) "sticky")
               (set! index (modulo (add1 index) (length entries))))
-            (for/fold ([p (hash-set selected 'bypass (hash-ref config 'bypass))])
-                      ([key '(username password)] #:when (hash-has-key? config key))
-              (hash-set p key (hash-ref config key))))))))
+            (hash-set selected 'bypass (hash-ref config 'bypass)))))))
 
 (define (read-proxy-list path)
   (with-handlers ([exn:fail? (lambda (_) (invalid 'list-file))])

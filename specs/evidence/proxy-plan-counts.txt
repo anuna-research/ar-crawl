@@ -1,3 +1,0 @@
-artefacts   CON=2 TEST=6 OBS=1 BUG=1 SPEC=1 IMPL=1 
-gate rows   0  (pass=0 fail=0 unverified=0)
-wikilinks   15  (anchored=14)

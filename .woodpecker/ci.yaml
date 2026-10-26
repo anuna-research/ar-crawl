@@ -5,14 +5,14 @@ steps:
   - name: test
     image: racket/racket:8.16-full
     commands:
-      - raco pkg install --auto --skip-installed parser-tools-lib html-parsing uuid http123 sxml csv-writing
+      - raco pkg install --auto --skip-installed html-parsing uuid http123 sxml csv-writing
       - raco test src tests
 
   - name: proxy-integration
     image: node:22-bookworm
     commands:
       - apt-get update && apt-get install -y racket curl python3 openssl
-      - raco pkg install --auto --skip-installed parser-tools-lib html-parsing uuid http123 sxml csv-writing
+      - raco pkg install --auto --skip-installed html-parsing uuid http123 sxml csv-writing
       - cd playwright-service && npm ci --ignore-scripts && npx playwright install --with-deps chromium && cd ..
       - node --test playwright-service/tests/*.test.js
       - python3 -m unittest discover -s tests -p 'test_proxy_integration.py' -v

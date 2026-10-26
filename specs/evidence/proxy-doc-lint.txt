@@ -1,6 +1,0 @@
-          declared_mode          how-to
-          title                  How to select an outbound proxy
-          TOTAL                  0 errors, 0 warnings (list cap 7)
-          longest_sentence       18 (limit 20, mode procedural)
-          scanned                33 sentences, 349 words
-          TOTAL                  0 errors, 0 warnings

@@ -1,3 +1,0 @@
-artefacts   REQ=1 CON=1 TEST=2 ADR=1 SPEC=1 IMPL=1 
-gate rows   0  (pass=0 fail=0 unverified=0)
-wikilinks   7  (anchored=6)

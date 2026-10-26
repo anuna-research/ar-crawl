@@ -1,9 +1,0 @@
-Tier 2 adversarial review — final scoped verdict
-
-No remaining actionable blocker identified. Prior P1 browser parsing denial of service and P2 malformed CLI hostname/port responsiveness findings are resolved for the reported attack shapes. Both runtimes apply the shared overall and authority-tail limits before parser construction, then require complete grammar recognition before field interpretation.
-
-Reproduced credential-prefixed negative cases independently: http://u:p@ followed by 4,000 hostname digits and :80 rejected by Racket in 286ms including startup; http://u:p@h: followed by 4,000 port zeros and 1 rejected in 278ms. Both JavaScript cases rejected in under 1ms (rounded). Earlier credential-free repros also rejected promptly. After the implementer corrected the expanded subprocess expectation, the final grammar suite passed: 71 tests, zero failures, including cross-runtime comparison and subprocess regressions. The rerun output is retained in /tmp/ar-crawl-accepted-review-tests.txt.
-
-Accepted documented limitation: near-limit credential-bearing CLI inputs can still require seconds in the Racket CFG backend. ADR-102 and the SIMPLIFY annotation now state that ceiling, with an owner and upgrade trigger. The remotely exposed browser grammar path does not share that slow backend.
-
-Reviewed negative lexical filters against the declared grammar: a literal @ is only a credential terminator, so the filters do not interpret credentials or substitute for full grammar recognition. No new parser-divergence, credential-redaction, or packaging blocker was identified in this scoped follow-up. Source files were not edited.

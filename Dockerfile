@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install Racket packages
 RUN raco pkg install --auto \
-    parser-tools-lib html-parsing \
+    html-parsing \
     uuid \
     http123 \
     data-lib
