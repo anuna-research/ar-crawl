@@ -1,12 +1,14 @@
 ---
 id: SPEC-001
 title: Outbound proxy selection
-status: implemented
+status: superseded
 tier: 2
 mode: reference
 ---
 
 # Outbound proxy selection
+
+Recognition contracts are superseded by [[SPEC-002-proxy-input-grammar]]. Routing requirements remain applicable.
 
 ## Orientation
 

@@ -1,0 +1,66 @@
+{
+  "phase": 3,
+  "gates": [
+    {
+      "gate": "red gate",
+      "mechanism": "raco test tests/test-proxy-grammar.rkt against preceding recogniser",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-red.txt"
+    },
+    {
+      "gate": "regression",
+      "mechanism": "raco test src tests",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-regression.txt"
+    },
+    {
+      "gate": "restored parser checks",
+      "mechanism": "raco test tests/test-proxy.rkt tests/test-proxy-grammar.rkt",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-racket.txt"
+    },
+    {
+      "gate": "JavaScript and cross-runtime corpus",
+      "mechanism": "node --test playwright-service/tests/*.test.js",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-node-all.txt"
+    },
+    {
+      "gate": "wire integration",
+      "mechanism": "python3 -m unittest discover -s tests -p test_proxy_integration.py -v",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-integration.txt"
+    },
+    {
+      "gate": "shared grammar and inherited mutations",
+      "mechanism": "python3 scripts/test-proxy-mutations.py",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-mutation.txt"
+    },
+    {
+      "gate": "standalone generated parser",
+      "mechanism": "raco exe tests/proxy-grammar-driver.rkt; run from isolated directory",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-binary.json"
+    },
+    {
+      "gate": "cross-model review",
+      "mechanism": "gpt-6-astra fresh-context adversarial review",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-accepted-review.txt"
+    },
+    {
+      "gate": "comprehension",
+      "mechanism": "grammar_final_orientation_gate fresh-context reader",
+      "result": "pass",
+      "evidence": "specs/evidence/proxy-grammar-comprehension.txt"
+    },
+    {
+      "gate": "human review before merge",
+      "mechanism": "maintainer PR review",
+      "result": "unverified",
+      "evidence": "PR4 remains open; owner repository maintainer",
+      "owner": "repository maintainer"
+    }
+  ]
+}

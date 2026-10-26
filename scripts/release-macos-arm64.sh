@@ -58,7 +58,7 @@ raco distribute "$BUILD_DIR/$DIST_DIR_NAME" "$BUILD_DIR/ar-crawl-arm"
 
 info "Bundling playwright-service..."
 mkdir -p "$BUILD_DIR/$DIST_DIR_NAME/lib/playwright-service"
-cp playwright-service/package.json playwright-service/server.js playwright-service/proxy-config.js \
+cp playwright-service/package.json playwright-service/server.js playwright-service/proxy-config.js playwright-service/proxy-input.js playwright-service/proxy-grammar.json \
   playwright-service/secure-session.js playwright-service/secure-session-cli.js \
   "$BUILD_DIR/$DIST_DIR_NAME/lib/playwright-service/"
 

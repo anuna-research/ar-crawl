@@ -35,10 +35,17 @@ Reference: https://playwright.dev/docs/api/class-browser#browser-new-context-opt
 
 ## URL recognition
 
-Racket `net/url` and the browser's WHATWG URL implementation parse endpoint structure.
-Anchored regular grammars restrict hosts, credentials, schemes, ports, bypass domains, and permitted URL components.
+The shared JSON BNF production table defines endpoint and bypass syntax.
+Racket parser-tools and JavaScript nearley generate recognisers from that same source.
+Named syntax trees separate recognition from field interpretation. Contract: [[SPEC-002-proxy-input-grammar#CON-103]].
 
 ## Configuration
 
 CLI fields, JSON configuration, and named environment variables resolve in that priority order.
 Explicit credential fields override embedded fields. Recognition completes before network requests.
+
+## Input grammar
+
+The BNF table maps named nonterminals to alternative sequences. Strings reference nonterminals; literal objects define terminals.
+Character classes expand into single-character terminal productions. Entry limits bound parser work before recognition.
+The IPv6 and IPv4-embedded address productions follow RFC 3986 section 3.2.2: https://www.rfc-editor.org/rfc/rfc3986#section-3.2.2.

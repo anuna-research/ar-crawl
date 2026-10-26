@@ -1,0 +1,267 @@
+{
+  "build": "raco exe tests/proxy-grammar-driver.rkt",
+  "result": "pass",
+  "working_directory": "isolated temporary directory",
+  "cases": [
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://localhost:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "socks5://proxy.example:1080"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "password": "p:ss",
+        "server": "http://proxy.test:8080",
+        "username": "u@x"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://[::]:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://[::1]:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://[2001:db8::]:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://[2001:db8:0:1:2:3:4:5]:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://[::ffff:192.0.2.1]:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "socks5://[2001:db8::192.0.2.1]:1080"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://[1:2:3:4:5:6:192.0.2.1]:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.test:65535"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "password": "p%3A",
+        "server": "http://proxy:80",
+        "username": "u"
+      }
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://host:80"
+      }
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "socks5://[::ffff:192.0.2.1]:1080"
+      }
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": true,
+      "value": ".example.org"
+    },
+    {
+      "accepted": true,
+      "value": "EXAMPLE.ORG"
+    },
+    {
+      "accepted": true,
+      "value": "127.0.0.1"
+    },
+    {
+      "accepted": true,
+      "value": "a-b.internal"
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": true,
+      "value": ""
+    },
+    {
+      "accepted": true,
+      "value": ".example.org,internal,127.0.0.1"
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": true,
+      "value": {
+        "server": "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:80"
+      }
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": true,
+      "value": ".aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    },
+    {
+      "accepted": false
+    }
+  ]
+}

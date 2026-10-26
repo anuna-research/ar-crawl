@@ -1,49 +1,15 @@
 #lang racket
 
-(require net/url racket/hash)
+(require "proxy-input.rkt" racket/hash)
 (provide resolve-proxy-config recognize-proxy make-proxy-selector
          read-proxy-list attach-proxy-config check-proxy-fields instantiate-proxy-selectors)
 
 ;; CON-101 (SPEC-001-proxy-support): recognise complete inputs before I/O.
 (define (invalid field) (error 'proxy-config "Invalid proxy ~a" field))
-(define (clean-string? x)
-  (and (string? x) (not (regexp-match? #px"[\u0000-\u001f\u007f]" x))))
-(define dns-pattern #px"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
-(define bypass-pattern #px"^\\.?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
-;; IPv6's hexadecimal-only grammar, recognised as a complete regular language.
-(define h "[0-9A-Fa-f]{1,4}")
-(define ipv6-pattern
-  (pregexp (string-append "^(?:" "(?:" h ":){7}" h
-                          "|(?:" h ":){1,7}:"
-                          (apply string-append
-                                 (for/list ([left (in-range 1 7)])
-                                   (format "|(?:~a:){1,~a}(?::~a){1,~a}" h left h (- 7 left))))
-                          "|:(?:(?::" h "){1,7}|:))$")))
-(define endpoint-pattern
-  #px"^(?:http|socks5)://(?:(?:[A-Za-z0-9._~!$&'()*+,;=-]|%(?!3[aA])[0-9A-Fa-f]{2})*:[A-Za-z0-9._~!$&'()*+,;=:%-]*@)?(?:[A-Za-z0-9.-]+|\\[[0-9A-Fa-f:]+\\]):[0-9]+/?$")
+(define clean-string? clean-proxy-string?)
 (define (recognize-proxy endpoint)
-  (unless (and (clean-string? endpoint) (regexp-match? endpoint-pattern endpoint)
-               (not (regexp-match? #px"%(?![0-9A-Fa-f]{2})" endpoint)))
-    (invalid 'server))
   (with-handlers ([exn:fail? (lambda (_) (invalid 'server))])
-    (define u (string->url endpoint))
-    (unless (and (url-host u) (if (string-contains? (url-host u) ":")
-                     (regexp-match? ipv6-pattern (url-host u))
-                     (regexp-match? dns-pattern (url-host u)))
-                 (exact-integer? (url-port u)) (<= 1 (url-port u) 65535))
-      (invalid 'server))
-    (define server (url->string (struct-copy url u [user #f] [path '()] [path-absolute? #f])))
-    (define base (hash 'server server))
-    (cond
-      [(url-user u)
-       (define parts (string-split (url-user u) ":" #:trim? #f))
-       (unless (>= (length parts) 2) (invalid 'credentials))
-       (define user (car parts))
-       (define pass (string-join (cdr parts) ":"))
-       (unless (and (clean-string? user) (clean-string? pass) (not (string-contains? user ":")))
-         (invalid 'credentials))
-       (hash-set* base 'username user 'password pass)]
-      [else base])))
+    (proxy-input-endpoint (parse-proxy-input 'endpoint endpoint))))
 
 (define check-proxy-fields
   (lambda (cfg) (check-fields cfg)))
@@ -59,7 +25,9 @@
       [(pool) (unless (and (list? value) (pair? value)) (invalid key))
               (for-each recognize-proxy value)]
       [(bypass) (unless (and (list? value)
-                            (andmap (lambda (v) (and (clean-string? v) (regexp-match? bypass-pattern v))) value))
+                            (andmap (lambda (v)
+                                      (with-handlers ([exn:fail? (lambda (_) #f)])
+                                        (parse-proxy-input 'bypass-host v) #t)) value))
                   (invalid key))]
       [else (invalid 'field)])))
 

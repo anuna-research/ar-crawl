@@ -9,6 +9,7 @@
     "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
+    "nearley": "2.20.1",
     "playwright": "^1.49.0",
     "playwright-extra": "^4.3.6",
     "pngjs": "^7.0.0",

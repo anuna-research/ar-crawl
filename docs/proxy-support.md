@@ -63,4 +63,6 @@ SOCKS5 target DNS resolution occurs at the proxy. Playwright supports HTTP proxy
 Chromium rejects authenticated SOCKS5; use the HTTP adaptor for that combination.
 
 Remove the flags and environment variables, or set `enabled: false`, to disable the feature on the next invocation.
-The behaviour and acceptance contracts are in [[SPEC-001-proxy-support]].
+Routing contracts are in [[SPEC-001-proxy-support]]. The shared input grammar is specified in [[SPEC-002-proxy-input-grammar]].
+
+Input limits are 4096 characters per configured endpoint, 269 per browser wire endpoint, 254 per bypass host, and 8192 per bypass list.

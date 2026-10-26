@@ -1,0 +1,14 @@
+Tier 2 follow-up adversarial review
+
+Prior P1 browser-service event-loop denial of service is resolved. The original 20,000-character hostname now rejects before parser construction in under 1ms in Node (rounded). Near-limit Node cases completed in 1–26ms. Existing Node grammar suite, including cross-runtime corpus, passed.
+
+[P2] Racket near-limit malformed endpoints still consume seconds before rejection.
+Location: src/proxy-input.rkt:63-79 and playwright-service/proxy-grammar.json label-middle/port productions.
+The overall endpoint length limit permits a 4,080-character hostname to enter cfg-parser; the 63-character label check still runs only after full parsing. Running tests/proxy-grammar-driver.rkt on [{"entry":"endpoint","input":"http://" + "0" repeated 4080 + ":80"}] exceeded a four-second subprocess timeout. A 4,096-character endpoint containing a zero-padded port also exceeded four seconds. A valid 4,094-character credential endpoint took 3.35 seconds including ~0.36-second Racket startup. This leaves CLI startup vulnerable to avoidable latency from malformed configuration/proxy-pool entries, even though the remotely exposed JavaScript case is fixed. Move field size bounds into shared grammar recognition or otherwise bound recognizer work before complete tree construction; add a Racket near-limit timeout regression. If lengthy valid credentials are intentionally allowed to take seconds, document that operational limit rather than inferring fast rejection from the oversized-input test.
+Trace: [[SPEC-002-proxy-input-grammar#CON-103]], [[SPEC-002-proxy-input-grammar#NFR-006]], [[SPEC-002-proxy-input-grammar#TEST-108]].
+
+Supporting parser-only measurements: Racket bypass-list with one invalid label of 1,000 characters rejected in 1.58s; 2,000 characters rejected in 5.59s; 8,192-character valid or invalid bypass-list inputs exceeded four seconds. This entry is browser-facing, so these measurements demonstrate parser scaling rather than an additional deployed Racket boundary exploit.
+
+Node measurements: 4,094-character valid credential endpoint 24ms; 4,090-character invalid hostname endpoint 26ms; 4,096-character zero-padded-port endpoint 21ms; 8,192-character valid bypass list 24ms; 8,192-character invalid single-label bypass list 23ms; maximum 269-character SOCKS5 wire endpoint 1ms.
+
+No source files were edited. Timings are local measurements, not portable latency guarantees.
